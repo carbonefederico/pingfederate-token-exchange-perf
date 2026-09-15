@@ -5,6 +5,25 @@
   "operations": [
     {
       "operationType": "SAVE",
+      "resourceType": "/administrativeAccounts",
+      "items": [
+        {
+          "username": "Administrator",
+          "password": "${PING_IDENTITY_PASSWORD}",
+          "roles": [
+            "EXPRESSION_ADMINISTRATOR",
+            "USER_ADMINISTRATOR",
+            "ADMINISTRATOR",
+            "CRYPTO_ADMINISTRATOR"
+          ],
+          "auditor": false,
+          "description": "Initial administrator user.",
+          "active": true
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
       "resourceType": "/license/agreement",
       "items": [
         {

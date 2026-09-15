@@ -59,6 +59,10 @@ pingfederate-admin:
     PERF_SUBJECT_JWKS: "${PERF_SUBJECT_JWKS_YAML}"
     PERF_SSL_SERVER_P12_PASSWORD: "${PERF_SSL_SERVER_P12_PASSWORD}"
     PERF_SSL_SERVER_P12_FILEDATA: "${PERF_SSL_SERVER_P12_FILEDATA}"
+    # Admin account password for the bulk config's /administrativeAccounts and
+    # the import hook's own authentication. Keep the image default unless
+    # PING_IDENTITY_PASSWORD is set in .env.
+    PING_IDENTITY_PASSWORD: "${PING_IDENTITY_PASSWORD:-2FederateM0re}"
 EOF
 
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
