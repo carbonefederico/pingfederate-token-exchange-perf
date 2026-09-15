@@ -1,8 +1,9 @@
 import http from 'k6/http';
 import encoding from 'k6/encoding';
-import crypto from 'k6/crypto';
 import { check } from 'k6';
 import { Rate, Trend, Counter } from 'k6/metrics';
+// NOTE: no `import crypto from 'k6/crypto'` — that legacy module shadows the
+// global WebCrypto `crypto` object that provides `crypto.subtle`.
 
 const successRate = new Rate('token_exchange_success');
 const latency = new Trend('token_exchange_latency', true);
