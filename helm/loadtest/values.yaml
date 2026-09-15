@@ -1,0 +1,24 @@
+image:
+  repository: grafana/k6
+  tag: "2.2.0"
+  pullPolicy: IfNotPresent
+
+existingSecret: pf-loadtest
+runId: "manual"
+
+# Number of parallel k6 agent Pods. RATE is the TOTAL rate across all
+# agents; each agent runs RATE / agentCount. Set via --set-string from
+# scripts/run-in-cluster.sh (AGENTS in the selected profile).
+agentCount: 1
+
+resources:
+  requests:
+    cpu: "1"
+    memory: 512Mi
+  limits:
+    cpu: "4"
+    memory: 2Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

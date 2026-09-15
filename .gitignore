@@ -1,0 +1,6 @@
+.env
+keys/
+results/
+*.zip
+
+.DS_Store

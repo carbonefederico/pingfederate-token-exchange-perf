@@ -1,0 +1,194 @@
+{
+  "metadata": {
+    "pfVersion": "13.1.2.0"
+  },
+  "operations": [
+    {
+      "operationType": "SAVE",
+      "resourceType": "/idp/tokenProcessors",
+      "items": [
+        {
+          "id": "PerfSubjectTokenProcessor",
+          "name": "Perf Subject Token Processor",
+          "pluginDescriptorRef": {
+            "id": "com.pingidentity.pf.tokenprocessors.jwt.JwtTokenProcessor"
+          },
+          "configuration": {
+            "fields": [
+              { "name": "Require Audience", "value": "true" },
+              { "name": "Require Expiration Time", "value": "true" },
+              { "name": "Allowed Clock Skew", "value": "10" }
+            ],
+            "tables": [
+              {
+                "name": "Allowed Issuers",
+                "rows": [
+                  {
+                    "fields": [
+                      { "name": "Issuer", "value": "${SUBJECT_ISSUER}" },
+                      { "name": "JWKS URL", "value": "" },
+                      { "name": "JWKS", "value": "${PERF_SUBJECT_JWKS}" }
+                    ],
+                    "defaultRow": false
+                  }
+                ]
+              },
+              {
+                "name": "Allowed Audiences",
+                "rows": [
+                  {
+                    "fields": [
+                      { "name": "Audience", "value": "${SUBJECT_AUDIENCE}" }
+                    ],
+                    "defaultRow": false
+                  }
+                ]
+              }
+            ]
+          },
+          "attributeContract": {
+            "coreAttributes": [{ "name": "sub" }],
+            "extendedAttributes": []
+          }
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
+      "resourceType": "/oauth/accessTokenManagers",
+      "items": [
+        {
+          "id": "PerfAccessTokenManager",
+          "name": "Perf Access Token Manager",
+          "pluginDescriptorRef": {
+            "id": "com.pingidentity.pf.access.token.management.plugins.JwtBearerAccessTokenManagementPlugin"
+          },
+          "configuration": {
+            "tables": [
+              { "name": "Symmetric Keys", "rows": [] },
+              { "name": "Certificates", "rows": [] }
+            ],
+            "fields": [
+              { "name": "Token Lifetime", "value": "5" },
+              { "name": "Use Centralized Signing Key", "value": "true" },
+              { "name": "JWS Algorithm", "value": "RS256" },
+              { "name": "Issuer Claim Value", "value": "${OUTPUT_ISSUER}" },
+              { "name": "Audience Claim Value", "value": "${OUTPUT_AUDIENCE}" },
+              { "name": "Type Header Value", "value": "at+jwt" },
+              { "name": "Include Key ID Header Parameter", "value": "true" },
+              { "name": "Include Issued At Claim", "value": "true" }
+            ]
+          },
+          "attributeContract": {
+            "coreAttributes": [],
+            "extendedAttributes": [],
+            "defaultSubjectAttribute": "sub"
+          },
+          "selectionSettings": { "resourceUris": [] },
+          "accessControlSettings": { "restrictClients": false, "allowedClients": [] }
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
+      "resourceType": "/oauth/tokenExchange/processor/policies",
+      "items": [
+        {
+          "id": "PerfTokenExchangePolicy",
+          "name": "Perf Token Exchange Policy",
+          "actorTokenRequired": false,
+          "attributeContract": {
+            "coreAttributes": [{ "name": "subject" }],
+            "extendedAttributes": []
+          },
+          "processorMappings": [
+            {
+              "attributeSources": [],
+              "subjectTokenType": "urn:ietf:params:oauth:token-type:access_token",
+              "subjectTokenProcessor": {
+                "id": "PerfSubjectTokenProcessor",
+                "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/idp/tokenProcessors/PerfSubjectTokenProcessor"
+              },
+              "attributeContractFulfillment": {
+                "subject": {
+                  "source": { "type": "SUBJECT_TOKEN" },
+                  "value": "sub"
+                }
+              },
+              "issuanceCriteria": { "conditionalCriteria": [] }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
+      "resourceType": "/oauth/tokenExchange/processor/settings",
+      "items": [
+        {
+          "defaultProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          }
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
+      "resourceType": "/oauth/accessTokenMappings",
+      "items": [
+        {
+          "id": "PerfTokenExchangeMapping",
+          "context": {
+            "type": "TOKEN_EXCHANGE_PROCESSOR_POLICY",
+            "contextRef": {
+              "id": "PerfTokenExchangePolicy",
+              "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+            }
+          },
+          "accessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "attributeSources": [],
+          "attributeContractFulfillment": {
+            "sub": {
+              "source": { "type": "TOKEN_EXCHANGE_PROCESSOR_POLICY" },
+              "value": "subject"
+            }
+          },
+          "issuanceCriteria": { "conditionalCriteria": [] }
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
+      "resourceType": "/oauth/clients",
+      "items": [
+        {
+          "clientId": "${PERF_CLIENT_ID}",
+          "name": "Perf Test Client",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        }
+      ]
+    }
+  ]
+}
