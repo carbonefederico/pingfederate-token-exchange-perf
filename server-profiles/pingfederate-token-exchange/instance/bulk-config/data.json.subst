@@ -5,6 +5,16 @@
   "operations": [
     {
       "operationType": "SAVE",
+      "resourceType": "/license/agreement",
+      "items": [
+        {
+          "accepted": true,
+          "licenseAgreementUrl": "https://${PF_ADMIN_PUBLIC_HOSTNAME}/pf-admin-api/license-agreement"
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
       "resourceType": "/keyPairs/sslServer",
       "items": [
         {
