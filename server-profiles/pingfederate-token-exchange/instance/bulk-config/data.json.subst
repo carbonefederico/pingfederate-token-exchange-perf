@@ -81,8 +81,7 @@
           },
           "attributeContract": {
             "coreAttributes": [],
-            "extendedAttributes": [],
-            "defaultSubjectAttribute": "sub"
+            "extendedAttributes": [{ "name": "sub" }]
           },
           "selectionSettings": { "resourceUris": [] },
           "accessControlSettings": { "restrictClients": false, "allowedClients": [] }

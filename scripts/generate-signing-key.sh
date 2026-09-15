@@ -56,14 +56,20 @@ print(base64.urlsafe_b64encode(b).decode().rstrip("="))
 PYEOF
 )"
 
+# A JWKS document ({"keys": [...]}) is what PingFederate's JWT Token
+# Processor 2.0 expects in its embedded-JWKS field.
 cat > "${JWKS_FILE}" <<EOF
 {
-  "kty": "RSA",
-  "use": "sig",
-  "alg": "RS256",
-  "kid": "perf-subject-key",
-  "n": "${n_b64url}",
-  "e": "AQAB"
+  "keys": [
+    {
+      "kty": "RSA",
+      "use": "sig",
+      "alg": "RS256",
+      "kid": "perf-subject-key",
+      "n": "${n_b64url}",
+      "e": "AQAB"
+    }
+  ]
 }
 EOF
 
