@@ -23,6 +23,17 @@ require_value PERF_CLIENT_SECRET
 
 PERF_SUBJECT_JWKS="$(python3 -c 'import json,sys; print(json.dumps(json.dumps(json.load(open(sys.argv[1]))))[1:-1])' "${JWKS_FILE}")"
 
+# The bulk import is full-state: it must carry the SSL server keypair the
+# instance will activate (bulk_config_ssl_server_config_invalid otherwise).
+# The p12 ships in the profile directory; the password is lab-disposable.
+P12_FILE="${ROOT_DIR}/server-profiles/pingfederate-token-exchange/ssl-server.p12"
+[[ -f "${P12_FILE}" ]] || {
+  echo "SSL server p12 not found: ${P12_FILE}" >&2
+  exit 1
+}
+PERF_SSL_SERVER_P12_PASSWORD='Secret1234!'
+PERF_SSL_SERVER_P12_FILEDATA="$(base64 -i "${P12_FILE}" | tr -d '\n')"
+
 # Profile values with commas (the JWKS JSON) cannot travel through
 # --set-string, so the admin envs go through a generated values file.
 GENERATED_VALUES="$(mktemp -t pf-perf-values).yaml"
@@ -46,6 +57,8 @@ pingfederate-admin:
     PERF_CLIENT_ID: "${CLIENT_ID:-perf-test-client}"
     PERF_CLIENT_SECRET: "${PERF_CLIENT_SECRET}"
     PERF_SUBJECT_JWKS: "${PERF_SUBJECT_JWKS_YAML}"
+    PERF_SSL_SERVER_P12_PASSWORD: "${PERF_SSL_SERVER_P12_PASSWORD}"
+    PERF_SSL_SERVER_P12_FILEDATA: "${PERF_SSL_SERVER_P12_FILEDATA}"
 EOF
 
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -

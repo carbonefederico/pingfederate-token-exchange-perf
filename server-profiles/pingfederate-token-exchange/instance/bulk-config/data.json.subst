@@ -5,6 +5,33 @@
   "operations": [
     {
       "operationType": "SAVE",
+      "resourceType": "/keyPairs/sslServer",
+      "items": [
+        {
+          "id": "perf-ssl-server-cert",
+          "password": "${PERF_SSL_SERVER_P12_PASSWORD}",
+          "fileData": "${PERF_SSL_SERVER_P12_FILEDATA}"
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
+      "resourceType": "/keyPairs/sslServer/settings",
+      "items": [
+        {
+          "activeRuntimeServerCerts": [
+            { "id": "perf-ssl-server-cert", "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/keyPairs/sslServer/perf-ssl-server-cert" }
+          ],
+          "activeAdminConsoleCerts": [
+            { "id": "perf-ssl-server-cert", "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/keyPairs/sslServer/perf-ssl-server-cert" }
+          ],
+          "adminConsoleCertRef": { "id": "perf-ssl-server-cert", "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/keyPairs/sslServer/perf-ssl-server-cert" },
+          "runtimeServerCertRef": { "id": "perf-ssl-server-cert", "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/keyPairs/sslServer/perf-ssl-server-cert" }
+        }
+      ]
+    },
+    {
+      "operationType": "SAVE",
       "resourceType": "/idp/tokenProcessors",
       "items": [
         {
