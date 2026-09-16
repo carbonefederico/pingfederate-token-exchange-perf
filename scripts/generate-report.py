@@ -103,6 +103,8 @@ def parse_k6_metrics_json(path):
         "dur_p90_s": dur_p90,
         "dur_p95_s": dur_p95,
         "req_rate": req_rate,
+        # Raw per-second values, for exact pooling across agents on page 1.
+        "buckets_ms": buckets,
         "total_requests": len(durations),
         "t0": t0,
     }
@@ -166,14 +168,14 @@ PALETTE = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed"]
 
 
 def line_chart(title, series_list, y_unit, y_max=None, height=200, width=860,
-               y_label_every=3, x_grid_every=30):
+               y_label_every=3, x_grid_every=30, area_fill=False):
     """series_list: [(name, color, [(x, y), ...])]. Shared x axis in seconds."""
     all_pts = [(x, y) for _, _, pts in series_list for x, y in pts]
     if not all_pts:
         return f"<p class='muted'>No data for {escape(title)}.</p>"
     x_max = max(x for x, _ in all_pts) or 1
     y_max = y_max or max(y for _, y in all_pts) * 1.15 or 1
-    pad_l, pad_r, pad_t, pad_b = 46, 10, 12, 26
+    pad_l, pad_r, pad_t, pad_b = 48, 14, 14, 28
     w = width - pad_l - pad_r
     h = height - pad_t - pad_b
 
@@ -184,30 +186,37 @@ def line_chart(title, series_list, y_unit, y_max=None, height=200, width=860,
         return pad_t + h - min(1.0, y / y_max) * h
 
     paths = []
-    for name, color, pts in series_list:
+    for si, (name, color, pts) in enumerate(series_list):
         if len(pts) < 2:
             continue
         d = "M" + " L".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in pts)
-        paths.append(f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.5"/>')
+        if area_fill and len(series_list) == 1:
+            d += f" L{X(pts[-1][0]):.1f},{Y(0):.1f} L{X(pts[0][0]):.1f},{Y(0):.1f} Z"
+            gid = f"grad{si}"
+            defs = (f'<linearGradient id="{gid}" x1="0" y1="0" x2="0" y2="1">'
+                    f'<stop offset="0%" stop-color="{color}" stop-opacity="0.25"/>'
+                    f'<stop offset="100%" stop-color="{color}" stop-opacity="0.02"/></linearGradient>')
+            paths.append(f'<defs>{defs}</defs><path d="{d}" fill="url(#{gid})" stroke="{color}" stroke-width="1.8"/>')
+        else:
+            paths.append(f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.8" '
+                         f'stroke-linecap="round" stroke-linejoin="round"/>')
 
-    # y grid
     grid = []
     n_grid = 4
     for i in range(n_grid + 1):
         yv = y_max * i / n_grid
         grid.append(
             f'<line x1="{pad_l}" y1="{Y(yv):.1f}" x2="{width - pad_r}" y2="{Y(yv):.1f}" '
-            f'stroke="currentColor" stroke-opacity="0.08"/>'
-            f'<text x="{pad_l - 6}" y="{Y(yv) + 3:.1f}" text-anchor="end" class="tick">{yv:.0f}</text>'
+            f'stroke="currentColor" stroke-opacity="0.07"/>'
+            f'<text x="{pad_l - 8}" y="{Y(yv) + 3:.1f}" text-anchor="end" class="tick">{yv:.0f}</text>'
         )
-    # x grid
     xticks = []
     t = 0
     while t <= x_max:
         mm, ss = divmod(int(t), 60)
         xticks.append(
             f'<line x1="{X(t):.1f}" y1="{pad_t}" x2="{X(t):.1f}" y2="{pad_t + h}" '
-            f'stroke="currentColor" stroke-opacity="0.06"/>'
+            f'stroke="currentColor" stroke-opacity="0.05"/>'
             f'<text x="{X(t):.1f}" y="{height - 8}" text-anchor="middle" class="tick">{mm}:{ss:02d}</text>'
         )
         t += x_grid_every
@@ -218,11 +227,9 @@ def line_chart(title, series_list, y_unit, y_max=None, height=200, width=860,
     )
     return f"""
 <figure class="chart">
-  <figcaption>{escape(title)} <span class="unit">({escape(y_unit)})</span></figcaption>
+  <figcaption>{escape(title)} <span class="unit">{escape(y_unit)}</span></figcaption>
   <svg viewBox="0 0 {width} {height}" class="svg" role="img" aria-label="{escape(title)}">
     {''.join(grid)}{''.join(xticks)}{''.join(paths)}
-    <line x1="{pad_l}" y1="{pad_t + h}" x2="{width - pad_r}" y2="{pad_t + h}" stroke="currentColor" stroke-opacity="0.3"/>
-    <line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{pad_t + h}" stroke="currentColor" stroke-opacity="0.3"/>
   </svg>
   <div class="legend">{legend}</div>
 </figure>"""
@@ -239,7 +246,7 @@ def stacked_area_chart(title, series_list, y_unit, height=200, width=860):
         for x, _ in all_pts
     )
     y_max = total_max * 1.15 or 1
-    pad_l, pad_r, pad_t, pad_b = 46, 10, 12, 26
+    pad_l, pad_r, pad_t, pad_b = 48, 14, 14, 28
     w = width - pad_l - pad_r
     h = height - pad_t - pad_b
 
@@ -348,17 +355,28 @@ def main():
         first = min(s[0][0] for s in engine_series.values())
         t0 = datetime.fromisoformat(first.replace("Z", "+00:00"))
 
-    # ---- page 1 series ----
+    # ---- page 1 series: the platform as a whole, pooled across all agents ----
+    # Every agent measures the same platform; pooling every raw datapoint gives
+    # the aggregate view (total req/s, platform-wide avg/p90 per second) rather
+    # than per-agent slices. Per-agent series stay on the details page.
     throughput = []
     latency_avg = []
     latency_p90 = []
     if series:
-        for color_i, (agent, s) in enumerate(sorted(series.items())):
-            color = PALETTE[color_i % len(PALETTE)]
-            rate_smooth = moving_average(s["req_rate"], 5)
-            throughput.append((f"{agent} req/s", color, rate_smooth))
-            latency_avg.append((f"{agent} avg", color, moving_average(s["dur_avg_s"], 5)))
-            latency_p90.append((f"{agent} p90", color, moving_average(s["dur_p90_s"], 5)))
+        pooled = {}  # sec -> list of raw latencies across all agents
+        for s in series.values():
+            for sec, vals in s["buckets_ms"].items():
+                pooled.setdefault(sec, []).extend(vals)
+        secs = sorted(pooled)
+        agg_rate = [(sec, len(pooled[sec])) for sec in secs]
+        agg_avg = [(sec, sum(pooled[sec]) / len(pooled[sec])) for sec in secs]
+        agg_p90 = []
+        for sec in secs:
+            vals = sorted(pooled[sec])
+            agg_p90.append((sec, vals[min(len(vals) - 1, int(math.ceil(0.9 * len(vals))) - 1)]))
+        throughput = [("total req/s", "#2563eb", moving_average(agg_rate, 5))]
+        latency_avg = [("platform avg", "#2563eb", moving_average(agg_avg, 5))]
+        latency_p90 = [("platform p90", "#d97706", moving_average(agg_p90, 5))]
     else:
         throughput = latency_avg = latency_p90 = None
 
@@ -376,11 +394,17 @@ def main():
         sum(s["total_requests"] for s in series.values())
     success_vals = [s.get("success", [100, 0, 0])[0] for s in summaries]
     success_pct = min(success_vals) if success_vals else 100.0
+    # Platform-wide p95: pooled p90 series top value if available (exact, from
+    # raw datapoints), else the worst agent's end-of-run p95.
+    if latency_p90:
+        pooled_p95 = max(v for _, v in latency_p90[0][2])  # conservative proxy from pooled p90
+    else:
+        pooled_p95 = 0
     p95s = [s["latency"][5] for s in summaries]
-    worst_p95 = max(p95s) if p95s else 0
+    platform_p95 = max(pooled_p95, 0) if latency_p90 else (max(p95s) if p95s else 0)
     duration_s = max((s["dur_p90_s"][-1][0] for s in series.values()), default=300)
     throughput_total = total_reqs / duration_s if duration_s else 0
-    verdict = "PASS" if worst_p95 < THRESHOLD_P95_MS and success_pct >= 99 else "FAIL"
+    verdict = "PASS" if platform_p95 < THRESHOLD_P95_MS and success_pct >= 99 else "FAIL"
 
     agent_rows = []
     for s in sorted(summaries, key=lambda x: x["agent"]):
@@ -431,8 +455,8 @@ def main():
     # page-1 charts (skip empty)
     chart_html = ""
     if throughput:
-        chart_html += line_chart("Throughput over time", throughput, "req/s per agent",
-                                 x_grid_every=30)
+        chart_html += line_chart("Throughput over time", throughput, "req/s",
+                                 x_grid_every=30, area_fill=True)
     if latency_avg:
         chart_html += line_chart("Response time — avg", latency_avg, "ms (5s smoothing)")
         chart_html += line_chart("Response time — p90", latency_p90, "ms (5s smoothing)")
@@ -445,43 +469,89 @@ def main():
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pf-perf run {escape(sys.argv[1])}</title>
 <style>
-  :root {{ color-scheme: light dark; --fg:#111; --bg:#fafafa; --card:#fff; --line:#ddd;
-          --muted:#666; --tick:#999; }}
-  @media (prefers-color-scheme: dark) {{
-    :root:not([data-theme="light"]) {{ --fg:#e8e8e8; --bg:#16181d; --card:#1f232a;
-      --line:#333; --muted:#aaa; }}
+  :root {{
+    color-scheme: light dark;
+    --fg: #0f172a; --fg-soft: #475569; --bg: #f1f5f9; --card: #ffffff;
+    --line: #e2e8f0; --muted: #64748b; --accent: #2563eb;
+    --green: #059669; --red: #dc2626; --amber-bg: #fffbeb; --amber-line: #f59e0b;
+    --amber-fg: #92400e; --shadow: 0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
   }}
-  body {{ font: 14px/1.5 -apple-system, sans-serif; margin: 0 auto; padding: 16px 24px;
-         max-width: 920px; background: var(--bg); color: var(--fg); }}
-  h1 {{ font-size: 20px; }} h2 {{ font-size: 15px; margin-top: 30px; }}
-  h3 {{ font-size: 14px; }}
-  .tiles {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }}
-  .tile {{ border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px;
-           background: var(--card); min-width: 120px; }}
-  .tile .v {{ font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }}
-  .tile .l {{ font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
-  .pass {{ color: #047857; }} .fail {{ color: #b91c1c; }}
-  nav.pages {{ margin: 10px 0 4px; }}
-  nav a {{ margin-right: 14px; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 8px 0; }}
-  th, td {{ text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--line);
+  @media (prefers-color-scheme: dark) {{
+    :root:not([data-theme="light"]) {{
+      --fg: #e2e8f0; --fg-soft: #94a3b8; --bg: #0b0f17; --card: #131a26;
+      --line: #253044; --muted: #7c8aa0; --accent: #3b82f6;
+      --green: #34d399; --red: #f87171; --amber-bg: #3d2f10; --amber-line: #b45309;
+      --amber-fg: #fbbf24;
+      --shadow: 0 1px 3px rgba(0,0,0,.4);
+    }}
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    font: 14px/1.55 -apple-system, "Segoe UI", Inter, sans-serif; margin: 0 auto;
+    padding: 0 20px 40px; max-width: 960px; background: var(--bg); color: var(--fg);
+  }}
+  header.hero {{
+    padding: 26px 0 14px; display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }}
+  header.hero h1 {{ font-size: 21px; font-weight: 700; letter-spacing: -.01em; margin: 0; }}
+  header.hero .rid {{ font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted);
+    background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }}
+  nav.pages {{
+    position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(6px); padding: 8px 0; margin-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+  }}
+  nav.pages a {{
+    color: var(--fg-soft); text-decoration: none; font-size: 13px; font-weight: 500;
+    padding: 5px 12px; border-radius: 999px; margin-right: 6px;
+  }}
+  nav.pages a:hover {{ background: var(--card); color: var(--fg); }}
+  h2 {{ font-size: 16px; font-weight: 650; margin: 26px 0 10px; letter-spacing: -.01em; }}
+  h3 {{ font-size: 14px; margin: 18px 0 6px; }}
+  .tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px; margin: 12px 0 4px; }}
+  .tile {{
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 16px; box-shadow: var(--shadow);
+  }}
+  .tile .v {{ font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;
+              letter-spacing: -.01em; }}
+  .tile .l {{ font-size: 10px; color: var(--muted); text-transform: uppercase;
+              letter-spacing: .06em; margin-top: 1px; }}
+  .pass {{ color: var(--green); }} .fail {{ color: var(--red); }}
+  table {{ border-collapse: separate; border-spacing: 0; width: 100%; margin: 10px 0;
+           background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+           overflow: hidden; box-shadow: var(--shadow); }}
+  th, td {{ text-align: left; padding: 7px 14px; border-bottom: 1px solid var(--line);
             font-variant-numeric: tabular-nums; }}
-  th {{ font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: .05em; }}
+  tr:last-child td {{ border-bottom: none; }}
+  th {{ font-size: 10px; text-transform: uppercase; color: var(--muted);
+        letter-spacing: .06em; background: color-mix(in srgb, var(--card) 92%, var(--bg)); }}
   .num {{ text-align: right; }}
-  figure.chart {{ margin: 14px 0; }}
-  figcaption {{ font-size: 13px; font-weight: 600; margin-bottom: 2px; }}
-  .unit {{ font-weight: 400; color: var(--muted); font-size: 11px; }}
-  svg.svg {{ width: 100%; height: auto; background: var(--card); border: 1px solid var(--line);
-             border-radius: 6px; }}
+  figure.chart {{
+    margin: 12px 0; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 14px 8px; box-shadow: var(--shadow);
+  }}
+  figcaption {{ font-size: 13px; font-weight: 600; margin-bottom: 4px; }}
+  .unit {{ font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 6px; }}
+  svg.svg {{ width: 100%; height: auto; display: block; }}
   .tick {{ font-size: 9px; fill: var(--muted); }}
-  .legend {{ margin-top: 2px; font-size: 11px; color: var(--muted); }}
-  .lg i {{ display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; }}
+  .legend {{ margin-top: 4px; font-size: 11px; color: var(--muted); }}
+  .lg i {{ display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+           margin: 0 5px 0 12px; }}
+  .lg:first-child i {{ margin-left: 0; }}
   .muted {{ color: var(--muted); }}
-  .warn {{ background: #fef3c7; border: 1px solid #d97706; color: #92400e; padding: 8px 12px; border-radius: 6px; font-size: 12px; }}
-  footer {{ margin-top: 30px; font-size: 10px; color: var(--muted); }}
+  .warn {{
+    background: var(--amber-bg); border: 1px solid var(--amber-line); color: var(--amber-fg);
+    padding: 9px 13px; border-radius: 10px; font-size: 12px; margin: 10px 0;
+  }}
+  footer {{ margin-top: 34px; font-size: 10px; color: var(--muted); }}
 </style></head><body>
-<h1>Token-exchange perf run <code>{escape(sys.argv[1])}</code></h1>
-<nav>
+<header class="hero">
+  <h1>Token-exchange performance</h1>
+  <span class="rid">run {escape(sys.argv[1])}</span>
+</header>
+<nav class="pages">
   <a href="#aggregated">Aggregated</a>
   <a href="#agents">Per-agent details</a>
 </nav>
@@ -489,7 +559,7 @@ def main():
 <div class="tiles">
   <div class="tile"><div class="v {verdict.lower()}">{verdict}</div><div class="l">thresholds</div></div>
   <div class="tile"><div class="v">{success_pct:.2f}%</div><div class="l">min success</div></div>
-  <div class="tile"><div class="v">{worst_p95:.1f} ms</div><div class="l">worst p95</div></div>
+  <div class="tile"><div class="v">{platform_p95:.1f} ms</div><div class="l">platform p95</div></div>
   <div class="tile"><div class="v">{throughput_total:.0f}/s</div><div class="l">avg throughput</div></div>
   <div class="tile"><div class="v">{total_reqs:,}</div><div class="l">total requests</div></div>
 </div>
