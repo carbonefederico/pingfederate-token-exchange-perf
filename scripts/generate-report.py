@@ -110,6 +110,18 @@ def parse_k6_metrics_json(path):
     }
 
 
+def parse_k6_progress_lines(path):
+    """Fallback: derive cumulative->per-second iteration counts from the k6
+    progress lines ("running (0m03.0s), 01/25 VUs, 149 complete ...").
+    Returns [(sec, cumulative_iters)] or []."""
+    pts = []
+    for m in re.finditer(r"running \((\d+)m([\d.]+)s\), \d+/\d+ VUs, (\d+) complete", path.read_text(errors="replace")):
+        sec = int(m.group(1)) * 60 + float(m.group(2))
+        pts.append((sec, int(m.group(3))))
+    pts.sort()
+    return pts
+
+
 def parse_usage_csv(path):
     series = {}
     with open(path, errors="replace") as f:
@@ -335,6 +347,7 @@ def main():
     summaries = [s for s in summaries if "latency" in s]
 
     metric_files = sorted(run_dir.glob("agent-*-metrics.json"))
+    fixture_warning = False
     series = {}
     for mf in metric_files:
         parsed = parse_k6_metrics_json(mf)
@@ -378,7 +391,26 @@ def main():
         latency_avg = [("platform avg", "#2563eb", moving_average(agg_avg, 5))]
         latency_p90 = [("platform p90", "#d97706", moving_average(agg_p90, 5))]
     else:
-        throughput = latency_avg = latency_p90 = None
+        # No per-request streams: still chart throughput from the k6 progress
+        # lines (cumulative iterations, differentiated per agent and summed).
+        per_agent_cum = {}
+        for log in sorted(run_dir.glob("agent-*.log")):
+            cum = parse_k6_progress_lines(log)
+            if len(cum) > 10:
+                per_agent_cum[log.stem] = cum
+        if per_agent_cum:
+            maxsec = int(max(sec for pts in per_agent_cum.values() for sec, _ in pts))
+            rate = []
+            for sec in range(1, maxsec + 1):
+                total = 0
+                for pts in per_agent_cum.values():
+                    d = dict(pts)
+                    total += d.get(sec, d.get(sec - 1, 0)) - d.get(sec - 1, d.get(sec, 0))
+                rate.append((sec, max(0, total)))
+            throughput = [("total req/s", "#2563eb", moving_average(rate, 5))]
+            latency_avg = latency_p90 = None
+        else:
+            throughput = latency_avg = latency_p90 = None
 
     cpu_charts = None
     if t0 is not None and engine_series:
