@@ -131,22 +131,39 @@ def parse_k6_progress_lines(path):
 
 
 def parse_usage_csv(path):
+    """Parse the monitor CSV into per-name series.
+
+    Supports both layouts:
+      pod-only (legacy):  timestamp,pod,cpu,memory
+      current:            timestamp,kind,name,cpu,memory_or_pct   (kind pod|node)
+
+    Returns {name: [(ts, cpu_m, mem_or_pct, kind), ...]}.
+    """
     series = {}
     with open(path, errors="replace") as f:
-        next(f)
+        header = f.readline()
+        has_kind = header.strip().split(",")[1:2] == ["kind"]
         for line in f:
             parts = line.strip().split(",")
-            if len(parts) != 4:
-                continue
-            ts, pod, cpu, mem = parts
-            cpu_m = int(cpu.rstrip("m")) if cpu.endswith("m") else 0
-            if mem.endswith("Mi"):
-                mem_v = int(mem[:-2])
-            elif mem.endswith("Gi"):
-                mem_v = int(float(mem[:-2]) * 1024)
+            if has_kind:
+                if len(parts) != 5:
+                    continue
+                ts, kind, name, cpu, last = parts
             else:
-                mem_v = 0
-            series.setdefault(pod, []).append((ts, cpu_m, mem_v))
+                if len(parts) != 4:
+                    continue
+                ts, name, cpu, last = parts
+                kind = "pod"
+            cpu_m = int(cpu.rstrip("m")) if cpu.endswith("m") else 0
+            if last.endswith("Mi"):
+                last_v = int(last[:-2])
+            elif last.endswith("Gi"):
+                last_v = int(float(last[:-2]) * 1024)
+            elif last.endswith("%"):  # node CPU percentage
+                last_v = float(last[:-1])
+            else:
+                last_v = 0
+            series.setdefault(name, []).append((ts, cpu_m, last_v, kind))
     return series
 
 
@@ -376,7 +393,8 @@ def main():
 
     usage_files = sorted(RESULTS.glob("pod-usage-*.csv"))
     usage = parse_usage_csv(usage_files[-1]) if usage_files else {}
-    engine_series = {p: s for p, s in usage.items() if "engine" in p}
+    engine_series = {p: s for p, s in usage.items() if "engine" in p and s[0][3] == "pod"}
+    node_series = {p: s for p, s in usage.items() if s[0][3] == "node"}
 
     # Time base: k6 series t0 if present, else CSV start.
     t0 = min((s["t0"] for s in series.values()), default=None)
@@ -429,13 +447,20 @@ def main():
             throughput = latency_avg = latency_p90 = None
 
     cpu_charts = None
+    cpu_series = []
+    node_cpu_series = []
     if t0 is not None and engine_series:
-        cpu_series = []
         for i, (pod, pts) in enumerate(sorted(engine_series.items())):
             # pf-pingfederate-engine-<rs-hash>-<suffix> -> engine-<suffix>
             short = pod.split("-")[-1]
             secs = to_seconds([(r[0], r[1]) for r in pts], t0)
             cpu_series.append((f"engine-{short}", PALETTE[i % len(PALETTE)], secs))
+        # Node-level CPU (percentage) for the nodes hosting the engines —
+        # exposes co-tenant load that inflates per-pod CPU and latency.
+        for node, pts in sorted(node_series.items()):
+            secs = to_seconds([(r[0], r[2]) for r in pts], t0)  # col3 = cpu %
+            if secs:
+                node_cpu_series.append((node, secs))
 
     # ---- aggregate numbers ----
     total_reqs = sum(int(s.get("reqs", [0])[0]) for s in summaries) or \
@@ -510,6 +535,15 @@ def main():
         chart_html += line_chart("Response time — p90", latency_p90, "ms (5s smoothing)")
     if cpu_series:
         chart_html += stacked_area_chart("Engine CPU", cpu_series, "millicores")
+    if node_cpu_series:
+        # Each node's total CPU as % of its allocatable — reveals co-tenant
+        # load that inflates engine CPU and latency.
+        node_lines = [
+            (f"node {n.split('.')[0][-11:]}", PALETTE[(i + 2) % len(PALETTE)], pts)
+            for i, (n, pts) in enumerate(node_cpu_series)
+        ]
+        chart_html += line_chart("Hosting nodes — total CPU", node_lines,
+                                 "% of node allocatable", y_max=130)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     html = f"""<!doctype html>
