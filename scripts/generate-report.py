@@ -77,7 +77,8 @@ def parse_k6_metrics_json(path):
                 ts = datetime.fromisoformat(t.replace("Z", "+00:00"))
             except ValueError:
                 continue
-            durations.append((ts, float(data.get("value", 0)) * 1000.0))
+            # k6's json output already reports trend durations in milliseconds.
+            durations.append((ts, float(data.get("value", 0))))
     if not durations:
         return None
     durations.sort(key=lambda x: x[0])
@@ -348,6 +349,8 @@ def main():
 
     metric_files = sorted(run_dir.glob("agent-*-metrics.json"))
     fixture_warning = False
+    stream_truncated = False
+    stream_gaps = []
     series = {}
     for mf in metric_files:
         parsed = parse_k6_metrics_json(mf)
@@ -355,8 +358,14 @@ def main():
             agent = mf.stem.replace("-metrics", "")
             series[agent] = parsed
             summ = next((s for s in summaries if s["agent"] == agent), None)
-            if summ and "reqs" in summ and abs(parsed["total_requests"] - summ["reqs"][0]) > summ["reqs"][0] * 0.1:
-                fixture_warning = True
+            if summ and "reqs" in summ:
+                gap = 1 - parsed["total_requests"] / max(1, summ["reqs"][0])
+                if gap > 0.5:
+                    fixture_warning = True  # counts wildly off: likely synthetic data
+                elif gap > 0.02:
+                    # Streams are snapshotted while pods run, so the last few
+                    # seconds of each agent's stream can be missing.
+                    stream_truncated = True
 
     usage_files = sorted(RESULTS.glob("pod-usage-*.csv"))
     usage = parse_usage_csv(usage_files[-1]) if usage_files else {}
@@ -595,7 +604,7 @@ def main():
   <div class="tile"><div class="v">{throughput_total:.0f}/s</div><div class="l">avg throughput</div></div>
   <div class="tile"><div class="v">{total_reqs:,}</div><div class="l">total requests</div></div>
 </div>
-{'<p class="warn">Note: latency/throughput time-series request counts do not match the end-of-run summaries — the series may be synthetic/preview data.</p>' if fixture_warning else ''}
+{'<p class="warn">Note: time-series request counts do not match the end-of-run summaries — the series may be synthetic/preview data.</p>' if fixture_warning else ''}{'<p class="muted">Note: per-request streams are snapshotted while the agents run; the last few seconds of each stream are missing (end-of-run summaries are complete).</p>' if stream_truncated else ''}
 {chart_html}
 <h2 id="agents">Per-agent details</h2>
 <p class="muted">{len(summaries)} agent(s) in this run.</p>
