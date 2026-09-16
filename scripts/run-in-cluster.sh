@@ -29,12 +29,13 @@ echo "Following ${job_name}; the command exits non-zero if k6 thresholds fail."
 kubectl -n "${NAMESPACE}" wait --for=condition=Ready pod \
   -l "job-name=${job_name}" --timeout=5m
 
-# Stream one agent's progress AND snapshot each agent's metric stream while
-# it is still Running — kubectl cp cannot exec into a completed pod, so the
-# last ~10s of the stream is missed (negligible; the end-of-run summary in
-# the log remains the authoritative total).
+# Snapshot each agent's metric stream while it is still Running — kubectl cp
+# cannot exec into a completed pod, so the tail of each stream is whatever
+# the newest successful snapshot holds. Copy to a temp file per agent and
+# keep the LARGEST snapshot (a cp racing k6's writes can truncate; bigger is
+# strictly more data). Poll every 3s to minimize tail loss.
 echo "Capturing metric streams while agents run (${agent_count} agents)..."
-declare -A running_seen
+declare -A running_seen best_size
 while true; do
   pending=0
   for i in $(seq 0 $((agent_count - 1))); do
@@ -47,18 +48,27 @@ while true; do
     fi
     phase="$(kubectl -n "${NAMESPACE}" get pod "${pod}" -o jsonpath='{.status.phase}' 2>/dev/null || echo Unknown)"
     if [[ "${phase}" == "Running" ]]; then
-      # Overwrite with the newest snapshot; the last one before Succeeded is kept.
-      kubectl -n "${NAMESPACE}" cp "${pod}:/out/k6.json" "${run_dir}/agent-${i}-metrics.json" -c k6 >/dev/null 2>&1 || true
+      tmp="${run_dir}/.agent-${i}-metrics.json.tmp"
+      if kubectl -n "${NAMESPACE}" cp "${pod}:/out/k6.json" "${tmp}" -c k6 >/dev/null 2>&1; then
+        size="$(wc -c < "${tmp}" 2>/dev/null || echo 0)"
+        prev="${best_size[$i]:-0}"
+        if [[ "${size}" -ge "${prev}" ]]; then
+          mv "${tmp}" "${run_dir}/agent-${i}-metrics.json"
+          best_size[$i]="${size}"
+        else
+          rm -f "${tmp}"  # truncated mid-write; keep the previous larger snapshot
+        fi
+      fi
       running_seen[$i]=1
       pending=1
     elif [[ "${phase}" == "Succeeded" ]]; then
-      running_seen[$i]=done  # snapshotted while running (or a very short run)
+      running_seen[$i]=done
     else
       pending=1
     fi
   done
   [[ "${pending}" -eq 0 ]] && break
-  sleep 10
+  sleep 3
 done
 
 kubectl -n "${NAMESPACE}" logs -f "job/${job_name}" || true
