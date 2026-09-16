@@ -48,6 +48,9 @@ for i in $(seq 0 $((agent_count - 1))); do
   pod="$(kubectl -n "${NAMESPACE}" get pods -o jsonpath="{range .items[?(@.metadata.annotations['batch\.kubernetes\.io/job-completion-index']=='${i}')]}{.metadata.name}{end}" 2>/dev/null)"
   if [[ -n "${pod}" ]]; then
     kubectl -n "${NAMESPACE}" logs "${pod}" -c k6 > "${run_dir}/agent-${i}.log" 2>/dev/null || true
+    # The streaming metric time-series (per-request latency etc.) written by
+    # k6's json output inside the pod.
+    kubectl -n "${NAMESPACE}" cp "${pod}:/out/k6.json" "${run_dir}/agent-${i}-metrics.json" -c k6 2>/dev/null || true
   fi
 done
 kubectl -n "${NAMESPACE}" get "job/${job_name}" -o wide > "${run_dir}/job.txt" 2>&1 || true

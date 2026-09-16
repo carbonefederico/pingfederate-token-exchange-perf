@@ -1,46 +1,116 @@
 #!/usr/bin/env python3
 """Generate a self-contained HTML performance report for a pf-perf test run.
 
+Page 1 aggregates the whole run: throughput over time, response time (avg+p90)
+over time, and engine CPU over time — all on one shared time axis so a vertical
+line crosses the same moment in every chart. Page 2 holds per-agent details.
+
 Inputs (under results/<run>/):
-  agent-<i>.log   k6 end-of-run summaries, one per agent Pod
-  ../pod-usage-<UTC>.csv   engine CPU/memory samples from make monitor
+  agent-<i>-metrics.json  k6 streaming NDJSON (per-request latency, http_reqs)
+  agent-<i>.log           k6 end-of-run summaries
+  ../pod-usage-<UTC>.csv  engine CPU/memory samples from make monitor
 Outputs:
-  results/<run>/report.html   one file, no external dependencies
+  results/<run>/report.html  one file, no external resources
 """
-import glob
+import gzip
+import io
 import json
+import math
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
 RESULTS = Path(__file__).resolve().parent.parent / "results"
+THRESHOLD_P95_MS = 500.0
 
 
-def parse_k6_log(path):
-    """Extract the final summary metrics from one k6 agent log."""
+# --------------------------------------------------------------------------
+# parsing
+# --------------------------------------------------------------------------
+
+def parse_k6_summary(path):
+    """End-of-run summary metrics from one k6 agent log."""
     text = path.read_text(errors="replace")
-    # End-of-run summary blocks: "metric_name.........: values"
     out = {"agent": path.stem}
     patterns = {
         "reqs": r"http_reqs\.+: +(\d+) +([\d.]+)/s",
         "success": r"token_exchange_success\.+: +([\d.]+)% +(\d+) out of (\d+)",
-        "latency": r"token_exchange_latency\.+: +avg=([\d.]+)ms +min=([\d.]+)ms +med=([\d.]+)ms +max=([\d.]+)ms +p\(90\)=([\d.]+)ms +p\(95\)=([\d.]+)ms",
-        "checks": r"checks_succeeded\.+: +([\d.]+)% +(\d+) out of (\d+)",
-        "vus_max": r"vus_max\.+: +(\d+)",
+        "latency": (r"token_exchange_latency\.+: +avg=([\d.]+)ms +min=([\d.]+)ms"
+                    r" +med=([\d.]+)ms +max=([\d.]+)ms +p\(90\)=([\d.]+)ms +p\(95\)=([\d.]+)ms"),
     }
     for key, pat in patterns.items():
         m = re.search(pat, text)
         if m:
             out[key] = [float(g) for g in m.groups()]
-    return out if "latency" in out else None
+    return out
+
+
+def parse_k6_metrics_json(path):
+    """Parse k6's streaming NDJSON into per-second series.
+
+    Returns dict with:
+      dur_avg_s, dur_p90_s, dur_p95_s: [(t_sec, value_ms), ...]
+      req_rate: [(t_sec, reqs_per_s), ...]  (derivative of cumulative count)
+      total_requests: int
+      t0: first absolute timestamp (str)
+    """
+    if path.stat().st_size > 512 * 1024 * 1024:
+        print(f"warning: {path} unexpectedly large; skipping", file=sys.stderr)
+        return None
+    durations = []
+    with open(path, errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or '"Point"' not in line.replace(" ", ""):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("type") != "Point" or ev.get("metric") != "http_req_duration":
+                continue
+            data = ev.get("data", {})
+            t = data.get("time", "")
+            try:
+                ts = datetime.fromisoformat(t.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            durations.append((ts, float(data.get("value", 0)) * 1000.0))
+    if not durations:
+        return None
+    durations.sort(key=lambda x: x[0])
+    t0 = durations[0][0]
+
+    # Bucket per second: avg + p90 over the requests in that second.
+    buckets = {}
+    for ts, ms in durations:
+        sec = int((ts - t0).total_seconds())
+        buckets.setdefault(sec, []).append(ms)
+    dur_avg, dur_p90, dur_p95 = [], [], []
+    for sec in sorted(buckets):
+        vals = sorted(buckets[sec])
+        n = len(vals)
+        dur_avg.append((sec, sum(vals) / n))
+        dur_p90.append((sec, vals[min(n - 1, int(math.ceil(0.90 * n)) - 1)]))
+        dur_p95.append((sec, vals[min(n - 1, int(math.ceil(0.95 * n)) - 1)]))
+
+    # Throughput: requests per second (count per bucket), smoothed over 5s.
+    req_rate = [(sec, len(buckets[sec])) for sec in sorted(buckets)]
+    return {
+        "dur_avg_s": dur_avg,
+        "dur_p90_s": dur_p90,
+        "dur_p95_s": dur_p95,
+        "req_rate": req_rate,
+        "total_requests": len(durations),
+        "t0": t0,
+    }
 
 
 def parse_usage_csv(path):
-    """Parse the monitor CSV into per-pod series of (t, cpu_m, mem_mi)."""
     series = {}
-    with open(path) as f:
+    with open(path, errors="replace") as f:
         next(f)
         for line in f:
             parts = line.strip().split(",")
@@ -58,6 +128,186 @@ def parse_usage_csv(path):
     return series
 
 
+# --------------------------------------------------------------------------
+# series helpers
+# --------------------------------------------------------------------------
+
+def moving_average(points, window):
+    """points: [(t, v)] sorted by t -> centered moving average of v over `window` samples."""
+    if not points or window <= 1:
+        return points
+    out = []
+    half = window // 2
+    for i, (t, _) in enumerate(points):
+        lo, hi = max(0, i - half), min(len(points), i + half + 1)
+        out.append((t, sum(v for _, v in points[lo:hi]) / (hi - lo)))
+    return out
+
+
+def to_seconds(points, t0):
+    """[(datetime|str, v)] -> [(float seconds since t0, v)]."""
+    out = []
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=timezone.utc)
+    for t, v in points:
+        if isinstance(t, str):
+            t = datetime.fromisoformat(t.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        out.append(((t - t0).total_seconds(), v))
+    return out
+
+
+# --------------------------------------------------------------------------
+# chart rendering (inline SVG, no JS)
+# --------------------------------------------------------------------------
+
+PALETTE = ["#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed"]
+
+
+def line_chart(title, series_list, y_unit, y_max=None, height=200, width=860,
+               y_label_every=3, x_grid_every=30):
+    """series_list: [(name, color, [(x, y), ...])]. Shared x axis in seconds."""
+    all_pts = [(x, y) for _, _, pts in series_list for x, y in pts]
+    if not all_pts:
+        return f"<p class='muted'>No data for {escape(title)}.</p>"
+    x_max = max(x for x, _ in all_pts) or 1
+    y_max = y_max or max(y for _, y in all_pts) * 1.15 or 1
+    pad_l, pad_r, pad_t, pad_b = 46, 10, 12, 26
+    w = width - pad_l - pad_r
+    h = height - pad_t - pad_b
+
+    def X(x):
+        return pad_l + x / x_max * w
+
+    def Y(y):
+        return pad_t + h - min(1.0, y / y_max) * h
+
+    paths = []
+    for name, color, pts in series_list:
+        if len(pts) < 2:
+            continue
+        d = "M" + " L".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in pts)
+        paths.append(f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.5"/>')
+
+    # y grid
+    grid = []
+    n_grid = 4
+    for i in range(n_grid + 1):
+        yv = y_max * i / n_grid
+        grid.append(
+            f'<line x1="{pad_l}" y1="{Y(yv):.1f}" x2="{width - pad_r}" y2="{Y(yv):.1f}" '
+            f'stroke="currentColor" stroke-opacity="0.08"/>'
+            f'<text x="{pad_l - 6}" y="{Y(yv) + 3:.1f}" text-anchor="end" class="tick">{yv:.0f}</text>'
+        )
+    # x grid
+    xticks = []
+    t = 0
+    while t <= x_max:
+        mm, ss = divmod(int(t), 60)
+        xticks.append(
+            f'<line x1="{X(t):.1f}" y1="{pad_t}" x2="{X(t):.1f}" y2="{pad_t + h}" '
+            f'stroke="currentColor" stroke-opacity="0.06"/>'
+            f'<text x="{X(t):.1f}" y="{height - 8}" text-anchor="middle" class="tick">{mm}:{ss:02d}</text>'
+        )
+        t += x_grid_every
+
+    legend = "".join(
+        f'<span class="lg"><i style="background:{color}"></i>{escape(name)}</span>'
+        for name, color, _ in series_list
+    )
+    return f"""
+<figure class="chart">
+  <figcaption>{escape(title)} <span class="unit">({escape(y_unit)})</span></figcaption>
+  <svg viewBox="0 0 {width} {height}" class="svg" role="img" aria-label="{escape(title)}">
+    {''.join(grid)}{''.join(xticks)}{''.join(paths)}
+    <line x1="{pad_l}" y1="{pad_t + h}" x2="{width - pad_r}" y2="{pad_t + h}" stroke="currentColor" stroke-opacity="0.3"/>
+    <line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{pad_t + h}" stroke="currentColor" stroke-opacity="0.3"/>
+  </svg>
+  <div class="legend">{legend}</div>
+</figure>"""
+
+
+def stacked_area_chart(title, series_list, y_unit, height=200, width=860):
+    """series_list stacked bottom-up; shared x axis in seconds. Readable CPU chart."""
+    all_pts = [(x, y) for _, _, pts in series_list for x, y in pts]
+    if not all_pts:
+        return f"<p class='muted'>No data for {escape(title)}.</p>"
+    x_max = max(x for x, _ in all_pts) or 1
+    total_max = max(
+        sum(y for _, _, pts in series_list for x2, y in pts if abs(x2 - x) < 1)
+        for x, _ in all_pts
+    )
+    y_max = total_max * 1.15 or 1
+    pad_l, pad_r, pad_t, pad_b = 46, 10, 12, 26
+    w = width - pad_l - pad_r
+    h = height - pad_t - pad_b
+
+    def X(x):
+        return pad_l + x / x_max * w
+
+    def Y(y):
+        return pad_t + h - min(1.0, y / y_max) * h
+
+    # interpolate every series onto a common second grid, then stack
+    grid = list(range(0, int(x_max) + 1))
+
+    def interp(pts):
+        d = dict((int(x), y) for x, y in pts)
+        return [d.get(g, d[max(k for k in d if k <= g)] if any(k <= g for k in d)
+                      else d[min(k for k in d)]) for g in grid]
+
+    stacked = []
+    cum = [0.0] * len(grid)
+    areas = []
+    for name, color, pts in series_list:
+        vals = interp(pts)
+        top = [c + v for c, v in zip(cum, vals)]
+        d = f"M{X(grid[0]):.1f},{Y(cum[0]):.1f} " + " L".join(
+            f"{X(g):.1f},{Y(t):.1f}" for g, t in zip(grid, top))
+        d += " L" + " L".join(f"{X(g):.1f},{Y(c):.1f}" for g, c in
+                              zip(reversed(grid), reversed(cum))) + " Z"
+        areas.append(f'<path d="{d}" fill="{color}" fill-opacity="0.35" stroke="{color}" stroke-width="1"/>')
+        cum = top
+
+    gridl = []
+    for i in range(5):
+        yv = y_max * i / 4
+        gridl.append(
+            f'<line x1="{pad_l}" y1="{Y(yv):.1f}" x2="{width - pad_r}" y2="{Y(yv):.1f}" '
+            f'stroke="currentColor" stroke-opacity="0.08"/>'
+            f'<text x="{pad_l - 6}" y="{Y(yv) + 3:.1f}" text-anchor="end" class="tick">{yv:.0f}</text>'
+        )
+    xticks = []
+    t = 0
+    while t <= x_max:
+        mm, ss = divmod(int(t), 60)
+        xticks.append(
+            f'<line x1="{X(t):.1f}" y1="{pad_t}" x2="{X(t):.1f}" y2="{pad_t + h}" '
+            f'stroke="currentColor" stroke-opacity="0.06"/>'
+            f'<text x="{X(t):.1f}" y="{height - 8}" text-anchor="middle" class="tick">{mm}:{ss:02d}</text>'
+        )
+        t += 30
+    legend = "".join(
+        f'<span class="lg"><i style="background:{color}"></i>{escape(name)}</span>'
+        for name, color, _ in series_list
+    )
+    return f"""
+<figure class="chart">
+  <figcaption>{escape(title)} <span class="unit">({escape(y_unit)}, stacked)</span></figcaption>
+  <svg viewBox="0 0 {width} {height}" class="svg" role="img" aria-label="{escape(title)}">
+    {''.join(gridl)}{''.join(xticks)}{''.join(areas)}
+    <line x1="{pad_l}" y1="{pad_t + h}" x2="{width - pad_r}" y2="{pad_t + h}" stroke="currentColor" stroke-opacity="0.3"/>
+    <line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{pad_t + h}" stroke="currentColor" stroke-opacity="0.3"/>
+  </svg>
+  <div class="legend">{legend}</div>
+</figure>"""
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
 def main():
     if len(sys.argv) < 2:
         runs = sorted((p for p in RESULTS.iterdir() if p.is_dir()), reverse=True)
@@ -66,7 +316,6 @@ def main():
             print(f"No RUN given; using newest: {runs[0].name}")
         else:
             print(__doc__)
-            print("No runs found under results/.", file=sys.stderr)
             sys.exit(1)
 
     run_dir = RESULTS / sys.argv[1]
@@ -74,120 +323,191 @@ def main():
         print(f"Run not found: {run_dir}", file=sys.stderr)
         sys.exit(1)
 
-    agent_logs = agent_logs_glob(run_dir)
-    agents = [a for a in (parse_k6_log(p) for p in agent_logs) if a]
-    if not agents:
-        print("No agent logs with summaries found; run `make test` first.", file=sys.stderr)
-        sys.exit(1)
+    summaries = [parse_k6_summary(p) for p in sorted(run_dir.glob("agent-*.log"))
+                 if not p.name.endswith("-metrics.json")]
+    summaries = [s for s in summaries if "latency" in s]
+
+    metric_files = sorted(run_dir.glob("agent-*-metrics.json"))
+    series = {}
+    for mf in metric_files:
+        parsed = parse_k6_metrics_json(mf)
+        if parsed:
+            agent = mf.stem.replace("-metrics", "")
+            series[agent] = parsed
+            summ = next((s for s in summaries if s["agent"] == agent), None)
+            if summ and "reqs" in summ and abs(parsed["total_requests"] - summ["reqs"][0]) > summ["reqs"][0] * 0.1:
+                fixture_warning = True
 
     usage_files = sorted(RESULTS.glob("pod-usage-*.csv"))
     usage = parse_usage_csv(usage_files[-1]) if usage_files else {}
-
-    total_reqs = int(sum(a.get("reqs", [0])[0] for a in agents))
-    total_iters = int(sum(a.get("success", [0, 0, 0])[2] for a in agents))
-    ok_iters = int(sum(a.get("success", [0, 0, 0])[1] for a in agents))
-    success_pct = 100.0 * ok_iters / total_iters if total_iters else 0
-    p95s = [a["latency"][5] for a in agents]
-    avgs = [a["latency"][0] for a in agents]
-    meds = [a["latency"][2] for a in agents]
-    worst_p95 = max(p95s)
-    rate = sum(10.003 for _ in agents)  # per-agent observed rate is 10.003 for this profile
-
     engine_series = {p: s for p, s in usage.items() if "engine" in p}
 
-    def sparkline(series, color, scale=1, unit=""):
-        if not series:
-            return ""
-        vals = [v for _, v, _ in series] if len(series[0]) == 3 else series
-        n = len(vals)
-        w, h = 240, 40
-        vmax = max(vals) or 1
-        pts = " ".join(
-            f"{i * w / (n - 1):.1f},{h - v / vmax * h:.1f}" for i, v in enumerate(vals)
-        )
-        label = f"max {max(vals):.0f}{unit}"
-        return (
-            f'<svg width="{w}" height="{h}" class="spark"><polyline fill="none" '
-            f'stroke="{color}" stroke-width="1.5" points="{pts}"/></svg>'
-            f'<span class="cap">{escape(f"max {max(vals):.0f}{unit}")}</span>'
+    # Time base: k6 series t0 if present, else CSV start.
+    t0 = min((s["t0"] for s in series.values()), default=None)
+    if t0 is None and engine_series:
+        first = min(s[0][0] for s in engine_series.values())
+        t0 = datetime.fromisoformat(first.replace("Z", "+00:00"))
+
+    # ---- page 1 series ----
+    throughput = []
+    latency_avg = []
+    latency_p90 = []
+    if series:
+        for color_i, (agent, s) in enumerate(sorted(series.items())):
+            color = PALETTE[color_i % len(PALETTE)]
+            rate_smooth = moving_average(s["req_rate"], 5)
+            throughput.append((f"{agent} req/s", color, rate_smooth))
+            latency_avg.append((f"{agent} avg", color, moving_average(s["dur_avg_s"], 5)))
+            latency_p90.append((f"{agent} p90", color, moving_average(s["dur_p90_s"], 5)))
+    else:
+        throughput = latency_avg = latency_p90 = None
+
+    cpu_charts = None
+    if t0 is not None and engine_series:
+        cpu_series = []
+        for i, (pod, pts) in enumerate(sorted(engine_series.items())):
+            # pf-pingfederate-engine-<rs-hash>-<suffix> -> engine-<suffix>
+            short = pod.split("-")[-1]
+            secs = to_seconds([(r[0], r[1]) for r in pts], t0)
+            cpu_series.append((f"engine-{short}", PALETTE[i % len(PALETTE)], secs))
+
+    # ---- aggregate numbers ----
+    total_reqs = sum(int(s.get("reqs", [0])[0]) for s in summaries) or \
+        sum(s["total_requests"] for s in series.values())
+    success_vals = [s.get("success", [100, 0, 0])[0] for s in summaries]
+    success_pct = min(success_vals) if success_vals else 100.0
+    p95s = [s["latency"][5] for s in summaries]
+    worst_p95 = max(p95s) if p95s else 0
+    duration_s = max((s["dur_p90_s"][-1][0] for s in series.values()), default=300)
+    throughput_total = total_reqs / duration_s if duration_s else 0
+    verdict = "PASS" if worst_p95 < THRESHOLD_P95_MS and success_pct >= 99 else "FAIL"
+
+    agent_rows = []
+    for s in sorted(summaries, key=lambda x: x["agent"]):
+        l = s["latency"]
+        agent_rows.append(
+            f"<tr><td>{escape(s['agent'])}</td>"
+            f"<td class='num'>{l[0]:.1f}</td><td class='num'>{l[2]:.1f}</td>"
+            f"<td class='num'>{l[5]:.1f}</td><td class='num'>{l[4]:.1f}</td>"
+            f"<td class='num'>{l[3]:.0f}</td>"
+            f"<td class='num'>{s.get('success', [0])[0]:.2f}%</td>"
+            f"<td class='num'>{int(s.get('reqs', [0])[0])}</td></tr>"
         )
 
-    # --- assemble HTML ------------------------------------------------------
-    rows = []
-    for a in sorted(agents, key=lambda x: x["agent"]):
-        l = a["latency"]
-        rows.append(
-            f"<tr><td>{escape(a['agent'])}</td><td>{l[0]:.1f}</td><td>{l[2]:.1f}</td>"
-            f"<td>{l[5]:.1f}</td><td>{l[4]:.1f}</td><td>{l[3]:.0f}</td>"
-            f"<td>{a.get('success', [0])[0]:.2f}%</td><td>{int(a.get('reqs', [0])[0])}</td></tr>"
-        )
+    detail_sections = ""
+    for agent in sorted(set(list(series.keys()) + [s["agent"] for s in summaries])):
+        s = series.get(agent)
+        summ = next((x for x in summaries if x["agent"] == agent), None)
+        charts = ""
+        if s:
+            p90_max = max((v for _, v in s["dur_p90_s"]), default=0)
+            charts += line_chart(f"{agent} — response time", [
+                ("avg", "#2563eb", s["dur_avg_s"]),
+                ("p90", "#d97706", s["dur_p90_s"]),
+            ], "ms", y_max=p90_max * 1.3 or None)
+            charts += line_chart(f"{agent} — throughput", [
+                ("req/s (5s smooth)", "#059669", moving_average(s["req_rate"], 5)),
+            ], "req/s")
+        if summ and "latency" in summ:
+            l = summ["latency"]
+            stat_rows = (
+                f"<tr><td>avg</td><td class='num'>{l[0]:.2f} ms</td></tr>"
+                f"<tr><td>median</td><td class='num'>{l[2]:.2f} ms</td></tr>"
+                f"<tr><td>p90</td><td class='num'>{l[4]:.2f} ms</td></tr>"
+                f"<tr><td>p95</td><td class='num'>{l[5]:.2f} ms</td></tr>"
+                f"<tr><td>max</td><td class='num'>{l[3]:.2f} ms</td></tr>"
+                f"<tr><td>requests</td><td class='num'>{int(summ.get('reqs', [0])[0])}</td></tr>"
+                f"<tr><td>success</td><td class='num'>{summ.get('success', [0])[0]:.2f}%</td></tr>"
+            )
+        else:
+            stat_rows = "<tr><td colspan='2' class='muted'>No end-of-run summary.</td></tr>"
+        detail_sections += f"""
+<section id="{escape(agent)}">
+  <h3>{escape(agent)}</h3>
+  {charts}
+  <table><tr><th>metric</th><th class="num">value</th></tr>{stat_rows}</table>
+</section>"""
 
-    # Engine CPU sparklines from the most recent usage CSV.
-    engine_rows = ""
-    for pod, s in sorted(engine_series.items()):
-        short = pod.split("595d5d9857-")[-1] if "595d5d9857-" in pod else pod
-        engine_rows += (
-            f"<tr><td>engine-{escape(short)}</td>"
-            f"<td>{sparkline(s, '#2563eb', unit='m')}</td></tr>"
-        )
+    # page-1 charts (skip empty)
+    chart_html = ""
+    if throughput:
+        chart_html += line_chart("Throughput over time", throughput, "req/s per agent",
+                                 x_grid_every=30)
+    if latency_avg:
+        chart_html += line_chart("Response time — avg", latency_avg, "ms (5s smoothing)")
+        chart_html += line_chart("Response time — p90", latency_p90, "ms (5s smoothing)")
+    if cpu_series:
+        chart_html += stacked_area_chart("Engine CPU", cpu_series, "millicores")
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    verdict = "PASS" if worst_p95 < 500 and success_pct >= 99 else "FAIL"
-
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pf-perf run {escape(sys.argv[1])}</title>
 <style>
-  :root {{ color-scheme: light dark; }}
-  body {{ font: 14px/1.5 -apple-system, sans-serif; margin: 0 auto; padding: 16px 24px;
-         max-width: 860px; background: #fafafa; color: #111; }}
-  h1 {{ font-size: 20px; }} h2 {{ font-size: 15px; margin-top: 28px; }}
-  .tiles {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }}
-  .tile {{ border: 1px solid #ddd; border-radius: 8px; padding: 10px 16px; min-width: 130px;
-           background: #fff; }}
-  .tile .v {{ font-size: 22px; font-weight: 600; }}
-  .tile .l {{ font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: .04em; }}
-  .pass {{ color: #047857; }} .fail {{ color: #b91c1c; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 8px 0; }}
-  th, td {{ text-align: left; padding: 5px 10px; border-bottom: 1px solid #e5e5e5; }}
-  th {{ font-size: 11px; text-transform: uppercase; color: #666; letter-spacing: .04em; }}
-  td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  .spark {{ vertical-align: middle; }}
-  .cap {{ font-size: 11px; color: #666; margin-left: 6px; }}
-  footer {{ margin-top: 32px; font-size: 11px; color: #999; }}
+  :root {{ color-scheme: light dark; --fg:#111; --bg:#fafafa; --card:#fff; --line:#ddd;
+          --muted:#666; --tick:#999; }}
   @media (prefers-color-scheme: dark) {{
-    :root:not([data-theme="light"]) body {{ background: #16181d; color: #e8e8e8; }}
-    :root:not([data-theme="light"]) .tile {{ background: #1f232a; border-color: #333; }}
-    :root:not([data-theme="light"]) th, :root:not([data-theme="light"]) td {{ border-color: #2c2c2c; }}
-    :root:not([data-theme="light"]) .tile .l {{ color: #aaa; }}
+    :root:not([data-theme="light"]) {{ --fg:#e8e8e8; --bg:#16181d; --card:#1f232a;
+      --line:#333; --muted:#aaa; }}
   }}
+  body {{ font: 14px/1.5 -apple-system, sans-serif; margin: 0 auto; padding: 16px 24px;
+         max-width: 920px; background: var(--bg); color: var(--fg); }}
+  h1 {{ font-size: 20px; }} h2 {{ font-size: 15px; margin-top: 30px; }}
+  h3 {{ font-size: 14px; }}
+  .tiles {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }}
+  .tile {{ border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px;
+           background: var(--card); min-width: 120px; }}
+  .tile .v {{ font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }}
+  .tile .l {{ font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
+  .pass {{ color: #047857; }} .fail {{ color: #b91c1c; }}
+  nav.pages {{ margin: 10px 0 4px; }}
+  nav a {{ margin-right: 14px; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 8px 0; }}
+  th, td {{ text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--line);
+            font-variant-numeric: tabular-nums; }}
+  th {{ font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: .05em; }}
+  .num {{ text-align: right; }}
+  figure.chart {{ margin: 14px 0; }}
+  figcaption {{ font-size: 13px; font-weight: 600; margin-bottom: 2px; }}
+  .unit {{ font-weight: 400; color: var(--muted); font-size: 11px; }}
+  svg.svg {{ width: 100%; height: auto; background: var(--card); border: 1px solid var(--line);
+             border-radius: 6px; }}
+  .tick {{ font-size: 9px; fill: var(--muted); }}
+  .legend {{ margin-top: 2px; font-size: 11px; color: var(--muted); }}
+  .lg i {{ display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; }}
+  .muted {{ color: var(--muted); }}
+  .warn {{ background: #fef3c7; border: 1px solid #d97706; color: #92400e; padding: 8px 12px; border-radius: 6px; font-size: 12px; }}
+  footer {{ margin-top: 30px; font-size: 10px; color: var(--muted); }}
 </style></head><body>
 <h1>Token-exchange perf run <code>{escape(sys.argv[1])}</code></h1>
-<p>{total_reqs:,} exchanges across {len(agents)} agents · generated {timestamp}</p>
+<nav>
+  <a href="#aggregated">Aggregated</a>
+  <a href="#agents">Per-agent details</a>
+</nav>
+<h2 id="aggregated">Aggregated</h2>
 <div class="tiles">
   <div class="tile"><div class="v {verdict.lower()}">{verdict}</div><div class="l">thresholds</div></div>
-  <div class="tile"><div class="v">{success_pct:.2f}%</div><div class="l">success</div></div>
+  <div class="tile"><div class="v">{success_pct:.2f}%</div><div class="l">min success</div></div>
   <div class="tile"><div class="v">{worst_p95:.1f} ms</div><div class="l">worst p95</div></div>
-  <div class="tile"><div class="v">{sum(avgs)/len(avgs):.1f} ms</div><div class="l">mean of avgs</div></div>
-  <div class="tile"><div class="v">{total_reqs // max(1, len(agents)) * len(agents) // 300}</div><div class="l">req/s</div></div>
+  <div class="tile"><div class="v">{throughput_total:.0f}/s</div><div class="l">avg throughput</div></div>
+  <div class="tile"><div class="v">{total_reqs:,}</div><div class="l">total requests</div></div>
 </div>
-<h2>Per-agent latency</h2>
+{'<p class="warn">Note: latency/throughput time-series request counts do not match the end-of-run summaries — the series may be synthetic/preview data.</p>' if fixture_warning else ''}
+{chart_html}
+<h2 id="agents">Per-agent details</h2>
+<p class="muted">{len(summaries)} agent(s) in this run.</p>
 <table><tr><th>agent</th><th class="num">avg ms</th><th class="num">med ms</th>
 <th class="num">p95 ms</th><th class="num">p90 ms</th><th class="num">max ms</th>
 <th class="num">success</th><th class="num">requests</th></tr>
-{''.join(rows)}
+{''.join(agent_rows)}
 </table>
-<h2>Engine CPU during the run (make monitor)</h2>
-<table>{engine_rows}</table>
-<footer>Generated by scripts/generate-report.py — self-contained, no external resources.</footer>
+{detail_sections}
+<footer>Generated {timestamp} by scripts/generate-report.py — self-contained, no external resources.</footer>
 </body></html>"""
     out = run_dir / "report.html"
     out.write_text(html)
     print(f"Report written: {out}")
-
-
-def agent_logs_glob(run_dir):
-    return sorted(run_dir.glob("agent-*.log"))
 
 
 if __name__ == "__main__":

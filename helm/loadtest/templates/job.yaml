@@ -24,7 +24,7 @@ spec:
         - name: k6
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["run", "/scripts/token-exchange.js"]
+          args: ["run", "--out", "json=/out/k6.json", "/scripts/token-exchange.js"]
           envFrom:
             - secretRef:
                 name: {{ .Values.existingSecret }}
@@ -39,12 +39,16 @@ spec:
             - name: script
               mountPath: /scripts
               readOnly: true
+            - name: results
+              mountPath: /out
           resources:
 {{ toYaml .Values.resources | indent 12 }}
       volumes:
         - name: script
           configMap:
             name: {{ .Release.Name }}-script
+        - name: results
+          emptyDir: {}
 {{- with .Values.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
