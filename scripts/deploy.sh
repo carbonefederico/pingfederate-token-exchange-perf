@@ -25,13 +25,14 @@ PERF_SUBJECT_JWKS="$(python3 -c 'import json,sys; print(json.dumps(json.dumps(js
 
 # The bulk import is full-state: it must carry the SSL server keypair the
 # instance will activate (bulk_config_ssl_server_config_invalid otherwise).
-# The p12 ships in the profile directory; the password is lab-disposable.
-P12_FILE="${ROOT_DIR}/server-profiles/pingfederate-token-exchange/ssl-server.p12"
+# The p12 (git-ignored, holds a private key) and its password come from the
+# operator's environment: PERF_SSL_SERVER_P12_FILE and PERF_SSL_SERVER_P12_PASSWORD.
+P12_FILE="${PERF_SSL_SERVER_P12_FILE:-${ROOT_DIR}/server-profiles/pingfederate-token-exchange/ssl-server.p12}"
 [[ -f "${P12_FILE}" ]] || {
-  echo "SSL server p12 not found: ${P12_FILE}" >&2
+  echo "SSL server p12 not found: ${P12_FILE} (see .env.example)" >&2
   exit 1
 }
-PERF_SSL_SERVER_P12_PASSWORD='Secret1234!'
+require_value PERF_SSL_SERVER_P12_PASSWORD
 PERF_SSL_SERVER_P12_FILEDATA="$(base64 -i "${P12_FILE}" | tr -d '\n')"
 
 # Profile values with commas (the JWKS JSON) cannot travel through

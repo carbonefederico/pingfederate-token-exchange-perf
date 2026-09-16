@@ -27,7 +27,7 @@ fi
 
 # Expand ${ROOT_DIR} inside .env/profile values such as USERS_FILE and
 # SUBJECT_SIGNING_KEY_FILE.
-for path_var in USERS_FILE SUBJECT_SIGNING_KEY_FILE; do
+for path_var in USERS_FILE SUBJECT_SIGNING_KEY_FILE PERF_SSL_SERVER_P12_FILE; do
   if [[ -n "${!path_var:-}" && "${!path_var}" == *'${ROOT_DIR}'* ]]; then
     export "${path_var}=${!path_var//\$\{ROOT_DIR\}/${ROOT_DIR}}"
   fi
