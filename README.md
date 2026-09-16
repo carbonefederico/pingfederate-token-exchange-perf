@@ -107,6 +107,18 @@ k6 reports transport metrics and three test-specific metrics:
 
 With multiple agents each k6 Pod prints its own summary; the per-agent latencies are comparable because every agent drives the same share of the rate. The Kubernetes Service should distribute requests across both engine Pods. Compare their CPU/memory samples in `results/` to catch imbalance. For precise per-node request counts, enable PingFederate access metrics/logging and aggregate by Pod name.
 
+## Benchmark assumptions
+
+These assumptions define what the measured numbers mean. They are design decisions, not accidents — changing any of them changes what the benchmark measures.
+
+1. **Subject tokens are always self-contained JWTs, validated by a JWT token processor.** The inbound token is an RS256 JWT validated by PingFederate's JWT Token Processor 2.0 against the public JWKS shipped in the server profile (issuer `https://pf-perf-subject`, audience `perf-test-client`). Validation is self-contained — signature, issuer, audience, expiry are all checked from the token itself against in-memory key material.
+
+2. **No persistent storage on the hot path.** The client is `TOKEN_EXCHANGE`-grant-only — PingFederate never issues refresh tokens here, so every grant is transient and the persistent store is never read or written. Token exchange produces transient grants by definition, and JWT subject-token validation requires no grant lookup (unlike opaque PF-issued tokens, which validate via a grant-store read). This holds even for subject tokens that originally came from a refresh-token-backed session: the JWT processor validates the token on its own merits.
+
+3. **The embedded HSQLDB is therefore out of the request path entirely.** Its known limitations (not shared between cluster nodes, not durable across restarts, trial-only licensing) do not affect these results — there is nothing for it to store, and configuration durability is provided by the bulk import re-imposing the profile on every admin restart. **This is deliberate: agent flows should not use refresh tokens through token exchange** — the agent already holds stronger credentials (its client secret), and the subject token itself carries the user authorization, so a refresh token would be redundant long-lived material to protect. Enforcement is by config (`grantTypes: ["TOKEN_EXCHANGE"]` only), not convention: PingFederate cannot issue refresh tokens here. If a future platform variant introduces opaque subject tokens validated by grant lookup, or refresh-token flows, the persistent store re-enters the hot path and this assumption must be revisited — with an external, shared datastore per Ping's production guidance.
+
+4. **What the numbers include and exclude.** Measured: client authentication, JWT validation, token-exchange policy evaluation, output-token signing, transport. Not measured: user authentication (synthetic subjects, no IdP round-trip), persistent-grant storage (never touched), external IdP/PAZ calls. Results are therefore a *floor* for real deployments that add storage-backed validation steps.
+
 ## Configuration and safety notes
 
 - `.env` contains credentials and is excluded from Git. Profiles in `profiles/` hold only shape settings and client IDs, never secrets. `keys/` holds the subject signing key and is also excluded.

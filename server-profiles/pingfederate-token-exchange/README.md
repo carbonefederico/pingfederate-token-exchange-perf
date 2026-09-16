@@ -93,6 +93,21 @@ After `make deploy`, the import outcome is in the admin pod log (the image's
 there prints the API's failure response — `failFast=false` on the import
 endpoint means all items are attempted and every failure is reported.
 
+## Deliberate design constraints
+
+- **`perf-test-client` is `TOKEN_EXCHANGE`-grant-only, with no refresh tokens.**
+  This is enforcement by configuration, not convention: PingFederate cannot
+  issue refresh tokens on this client, so every grant is transient and the
+  persistent store is never touched at runtime. Agent flows should not mint
+  refresh tokens through token exchange — the agent already holds stronger
+  credentials, and the subject JWT carries the user authorization. Do not add
+  `REFRESH_TOKEN` to `grantTypes` without revisiting the datastore strategy
+  (the embedded HSQLDB is not a shared, durable grant store).
+- **Subject-token validation is self-contained** (JWT Token Processor 2.0 with
+  the embedded JWKS): no datastore round-trip on the validation path. Opaque
+  PF-issued subject tokens would validate via grant lookup and change the
+  performance profile — not part of this design.
+
 ## Changing the subject signing key
 
 The JWKS must match the private key k6 uses (`keys/subject-signing.key`,
