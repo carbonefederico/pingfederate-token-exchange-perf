@@ -60,6 +60,7 @@ def parse_k6_metrics_json(path):
         print(f"warning: {path} unexpectedly large; skipping", file=sys.stderr)
         return None
     durations = []
+    warmup_points = 0
     with open(path, errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -72,6 +73,11 @@ def parse_k6_metrics_json(path):
             if ev.get("type") != "Point" or ev.get("metric") != "http_req_duration":
                 continue
             data = ev.get("data", {})
+            # Warmup traffic (phase=warmup scenario) is excluded from the
+            # measured series — it exists to prime connections and JIT.
+            if data.get("tags", {}).get("phase") == "warmup":
+                warmup_points += 1
+                continue
             t = data.get("time", "")
             try:
                 ts = datetime.fromisoformat(t.replace("Z", "+00:00"))
@@ -107,6 +113,7 @@ def parse_k6_metrics_json(path):
         # Raw per-second values, for exact pooling across agents on page 1.
         "buckets_ms": buckets,
         "total_requests": len(durations),
+        "warmup_points": warmup_points,
         "t0": t0,
     }
 

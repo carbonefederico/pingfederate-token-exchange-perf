@@ -30,6 +30,7 @@ args=(
   --from-literal=ACTOR_TOKEN_TYPE="${ACTOR_TOKEN_TYPE:-urn:ietf:params:oauth:token-type:access_token}"
   --from-literal=RATE="${RATE:-50}"
   --from-literal=DURATION="${DURATION:-5m}"
+  --from-literal=WARMUP="${WARMUP:-30s}"
   --from-literal=REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-30s}"
   --from-literal=PRE_ALLOCATED_VUS="${PRE_ALLOCATED_VUS:-25}"
   --from-literal=MAX_VUS="${MAX_VUS:-200}"

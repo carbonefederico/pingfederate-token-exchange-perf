@@ -96,6 +96,21 @@ export const options = {
   insecureSkipTLSVerify: (__ENV.INSECURE_SKIP_TLS_VERIFY || 'false') === 'true',
   discardResponseBodies: false,
   scenarios: {
+    // Warmup: full-rate ramp that fills connection pools and lets the JVM
+    // JIT-compile hot paths. Its traffic is tagged and excluded from the
+    // measured thresholds; the measured scenario starts after it finishes.
+    warmup: {
+      executor: 'constant-arrival-rate',
+      rate,
+      timeUnit: '1s',
+      duration: __ENV.WARMUP || '30s',
+      preAllocatedVUs,
+      maxVUs,
+      gracefulStop: '5s',
+      exec: 'warmupIteration',
+      tags: { phase: 'warmup' },
+      startTime: '0s',
+    },
     token_exchange: {
       executor: 'constant-arrival-rate',
       rate,
@@ -104,9 +119,15 @@ export const options = {
       preAllocatedVUs,
       maxVUs,
       gracefulStop: '30s',
+      // Starts once the warmup scenario has finished.
+      startTime: __ENV.WARMUP || '30s',
+      tags: { phase: 'measured' },
     },
   },
   thresholds: {
+    // Thresholds apply to the aggregate; the measured scenario's metrics are
+    // what the report reads — warmup traffic is tagged phase=warmup and
+    // excluded by the report generator.
     token_exchange_success: [`rate>=${minimumSuccessRate}`],
     token_exchange_latency: [`p(95)<${p95Ms}`],
     http_req_failed: ['rate<0.01'],
@@ -121,7 +142,18 @@ function addIfPresent(body, key, value) {
   if (value) body[key] = value;
 }
 
+// Warmup iterations run the same measured path — they warm connections, JIT
+// and caches — but their metric points carry phase=warmup so the report can
+// exclude them.
+export async function warmupIteration() {
+  await doExchange();
+}
+
 export default async function () {
+  await doExchange();
+}
+
+async function doExchange() {
   // Fresh self-signed subject token per iteration; users rotate round-robin
   // so consecutive requests authenticate different subjects.
   const subjectToken = await buildSubjectToken(__VU, __ITER);
