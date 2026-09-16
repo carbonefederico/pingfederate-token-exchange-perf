@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deploy verify smoke test monitor port-forward-admin uninstall validate keys
+.PHONY: deploy verify smoke test monitor port-forward-admin uninstall validate keys report
 
 deploy:
 	./scripts/deploy.sh
@@ -28,4 +28,8 @@ uninstall:
 
 validate:
 	./scripts/validate.sh
+
+# Usage: make report RUN=20260916075741  (omit RUN to use the newest results dir)
+report:
+	./scripts/generate-report.py $(RUN)
 
