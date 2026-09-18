@@ -135,6 +135,12 @@ export const options = {
     token_exchange_success: [`rate>=${minimumSuccessRate}`],
     token_exchange_latency: [`p(95)<${p95Ms}`],
     http_req_failed: ['rate<0.01'],
+    // Dropped iterations invalidate a stress stage: when required concurrency
+    // (rate x latency) exceeds maxVUs, k6 silently sheds load and latency
+    // looks fine because the excess requests were never sent. Any drop
+    // fails the stage — count per agent (the metric is per-agent aggregate,
+    // warmup included; a nonzero count means the generator shed load).
+    dropped_iterations: ['count==0'],
   },
   tags: {
     system_under_test: 'pingfederate',

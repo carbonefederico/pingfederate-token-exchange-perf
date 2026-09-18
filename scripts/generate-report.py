@@ -37,13 +37,33 @@ def parse_k6_summary(path):
     patterns = {
         "reqs": r"http_reqs\.+: +(\d+) +([\d.]+)/s",
         "success": r"token_exchange_success\.+: +([\d.]+)% +(\d+) out of (\d+)",
-        "latency": (r"token_exchange_latency\.+: +avg=([\d.]+)ms +min=([\d.]+)ms"
-                    r" +med=([\d.]+)ms +max=([\d.]+)ms +p\(90\)=([\d.]+)ms +p\(95\)=([\d.]+)ms"),
+        # k6 prints durations >= 1s with an "s" suffix ("1.19s"), < 1s as ms.
+        "latency": (r"token_exchange_latency\.+: +avg=([\d.]+)(m?s) +min=([\d.]+)(m?s)"
+                    r" +med=([\d.]+)(m?s) +max=([\d.]+)(m?s) +p\(90\)=([\d.]+)(m?s) +p\(95\)=([\d.]+)(m?s)"),
+        # per-agent dropped iterations (load shedding by the VU cap)
+        "dropped": r"dropped_iterations\.+: +(\d+)",
+        # the configured scenario rate, from the scenario description line
+        "target_rate": r"token_exchange: +([\d.]+) +iterations/s",
+        # the warmup duration, from the warmup scenario line ("30s")
+        "warmup_cfg": r"warmup: +[\d.]+ +iterations/s for +([\d.]+[sm])",
     }
     for key, pat in patterns.items():
         m = re.search(pat, text)
         if m:
-            out[key] = [float(g) for g in m.groups()]
+            if key == "warmup_cfg":  # duration strings like "30s" / "5m"
+                out[key] = list(m.groups())
+            elif key == "latency":
+                # interleave value/unit groups; normalize s to ms
+                vals = []
+                g = m.groups()
+                for i in range(0, len(g), 2):
+                    n = float(g[i])
+                    if g[i + 1] == "s":
+                        n *= 1000.0
+                    vals.append(n)
+                out[key] = vals
+            else:
+                out[key] = [float(g) for g in m.groups()]
     return out
 
 
@@ -477,7 +497,38 @@ def main():
     platform_p95 = max(pooled_p95, 0) if latency_p90 else (max(p95s) if p95s else 0)
     duration_s = max((s["dur_p90_s"][-1][0] for s in series.values()), default=300)
     throughput_total = total_reqs / duration_s if duration_s else 0
-    verdict = "PASS" if platform_p95 < THRESHOLD_P95_MS and success_pct >= 99 else "FAIL"
+    # Dropped iterations and achieved-vs-target rate: the generator must not
+    # shed load silently (Little's-law VU cap). The end-of-run aggregate
+    # includes warmup; the measured-window target is target_rate x agents x
+    # measured seconds, and the measured requests exclude the warmup scenario.
+    total_dropped = sum(int(s.get("dropped", [0])[0]) for s in summaries)
+
+    def parse_duration(text):
+        m = re.match(r"([\d.]+)([sm])", text)
+        if not m:
+            return None
+        return float(m.group(1)) * (60 if m.group(2) == "m" else 1)
+
+    warmup_configured_s = next(
+        (parse_duration(s["warmup_cfg"][0]) for s in summaries if "warmup_cfg" in s), None)
+    target_rate = next((float(s["target_rate"][0]) for s in summaries if "target_rate" in s), None)
+    achieved_pct = None
+    if target_rate and series:
+        # Prefer per-request stream totals (they exclude warmup because the
+        # parser filters phase=warmup points). But streams may be partial
+        # (snapshot capture), so cross-check against the end-of-run total
+        # minus the configured warmup traffic; use the larger, complete count.
+        # Pre-warmup runs have no warmup_cfg: nothing to subtract.
+        stream_reqs = sum(s["total_requests"] for s in series.values())
+        if warmup_configured_s:
+            log_reqs_excl_warmup = total_reqs - int(target_rate * len(summaries) * warmup_configured_s)
+        else:
+            log_reqs_excl_warmup = total_reqs
+        measured_reqs = max(stream_reqs, log_reqs_excl_warmup)
+        target_measured = target_rate * len(summaries) * duration_s
+        if target_measured > 0:
+            achieved_pct = 100.0 * measured_reqs / target_measured
+    verdict = "PASS" if platform_p95 < THRESHOLD_P95_MS and success_pct >= 99 and (achieved_pct is None or achieved_pct >= 98) else "FAIL"
 
     agent_rows = []
     for s in sorted(summaries, key=lambda x: x["agent"]):
@@ -488,7 +539,8 @@ def main():
             f"<td class='num'>{l[5]:.1f}</td><td class='num'>{l[4]:.1f}</td>"
             f"<td class='num'>{l[3]:.0f}</td>"
             f"<td class='num'>{s.get('success', [0])[0]:.2f}%</td>"
-            f"<td class='num'>{int(s.get('reqs', [0])[0])}</td></tr>"
+            f"<td class='num'>{int(s.get('reqs', [0])[0])}</td>"
+            f"<td class='num'>{int(s.get('dropped', [0])[0])}</td></tr>"
         )
 
     detail_sections = ""
@@ -642,6 +694,8 @@ def main():
   <div class="tile"><div class="v {verdict.lower()}">{verdict}</div><div class="l">thresholds</div></div>
   <div class="tile"><div class="v">{success_pct:.2f}%</div><div class="l">min success</div></div>
   <div class="tile"><div class="v">{platform_p95:.1f} ms</div><div class="l">platform p95</div></div>
+  <div class="tile"><div class="v">{'—' if achieved_pct is None else f'{achieved_pct:.1f}%'}</div><div class="l">achieved vs target rate</div></div>
+  <div class="tile"><div class="v {verdict.lower() if total_dropped else ''}">{total_dropped:,}</div><div class="l">dropped iterations</div></div>
   <div class="tile"><div class="v">{throughput_total:.0f}/s</div><div class="l">avg throughput</div></div>
   <div class="tile"><div class="v">{total_reqs:,}</div><div class="l">total requests</div></div>
 </div>
@@ -651,7 +705,7 @@ def main():
 <p class="muted">{len(summaries)} agent(s) in this run.</p>
 <table><tr><th>agent</th><th class="num">avg ms</th><th class="num">med ms</th>
 <th class="num">p95 ms</th><th class="num">p90 ms</th><th class="num">max ms</th>
-<th class="num">success</th><th class="num">requests</th></tr>
+<th class="num">success</th><th class="num">requests</th><th class="num">dropped</th></tr>
 {''.join(agent_rows)}
 </table>
 {detail_sections}
