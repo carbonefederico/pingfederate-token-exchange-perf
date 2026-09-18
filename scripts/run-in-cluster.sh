@@ -51,7 +51,7 @@ for p in json.load(sys.stdin)['items']:
   echo "  ]"
 } > "${run_dir}/env.json"
 # Strip trailing commas before '}' or ']' (the looped printf emits trailing commas).
-python3 -c 'import re,sys; p=sys.argv[1]; t=open(p).read(); open(p,"w").write(re.sub(r",(\s*[}\]])", r"", t))' "${run_dir}/env.json"
+python3 -c 'import re,sys; p=sys.argv[1]; t=open(p).read(); open(p,"w").write(re.sub(r",(\s*[}\]])", lambda m: m.group(1), t))' "${run_dir}/env.json"
 
 helm uninstall "${LOADTEST_RELEASE}" --namespace "${NAMESPACE}" >/dev/null 2>&1 || true
 helm install "${LOADTEST_RELEASE}" "${ROOT_DIR}/helm/loadtest" "${helm_args[@]}"
