@@ -22,8 +22,17 @@ const agentIndex = Number(__ENV.AGENT_INDEX || 0);
 if (agentIndex >= agentCount) {
   throw new Error(`AGENT_INDEX (${agentIndex}) must be less than AGENT_COUNT (${agentCount})`);
 }
-// Each agent drives its share of the total rate.
+// Each agent drives its share of the total rate. Whole-iteration rounding
+// can distort the aggregate (RATE=25 over 10 agents -> 3/agent = 30 total,
+// +20%); fail loudly on drift instead of silently shedding or overloading.
 const rate = Math.max(1, Math.round(totalRate / agentCount));
+const rateDrift = Math.abs(rate * agentCount - totalRate) / totalRate;
+if (rateDrift > 0.05) {
+  throw new Error(
+    `Rate cannot be distributed: ${totalRate}/s over ${agentCount} agents rounds to ` +
+    `${rate * agentCount}/s (${(rateDrift * 100).toFixed(1)}% drift > 5%). ` +
+    `Choose RATE divisible by AGENTS, or fewer agents.`);
+}
 
 const preAllocatedVUs = Number(__ENV.PRE_ALLOCATED_VUS || 25);
 const maxVUs = Number(__ENV.MAX_VUS || 200);
@@ -129,12 +138,13 @@ export const options = {
     },
   },
   thresholds: {
-    // Thresholds apply to the aggregate; the measured scenario's metrics are
-    // what the report reads — warmup traffic is tagged phase=warmup and
-    // excluded by the report generator.
-    token_exchange_success: [`rate>=${minimumSuccessRate}`],
-    token_exchange_latency: [`p(95)<${p95Ms}`],
-    http_req_failed: ['rate<0.01'],
+    // Latency and success gates apply to the MEASURED scenario only
+    // (sub-metrics scoped by scenario name); warmup traffic exists to prime
+    // the platform and must not gate. k6 evaluates these sub-metric
+    // thresholds on each scenario's tagged datapoints.
+    'token_exchange_latency{scenario:token_exchange}': [`p(95)<${p95Ms}`],
+    'token_exchange_success{scenario:token_exchange}': [`rate>=${minimumSuccessRate}`],
+    'http_req_failed{scenario:token_exchange}': ['rate<0.01'],
     // Dropped iterations invalidate a stress stage: when required concurrency
     // (rate x latency) exceeds maxVUs, k6 silently sheds load and latency
     // looks fine because the excess requests were never sent. Any drop

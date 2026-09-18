@@ -21,6 +21,38 @@ helm_args=(
 run_dir="${ROOT_DIR}/results/${run_id}"
 mkdir -p "${run_dir}"
 
+# Run metadata (M2/auditability): every resolved variable that defines the
+# run, plus the cluster context. The report reads thresholds from here so
+# the PASS/FAIL gate is the same one the profiles declared.
+{
+  echo "{"
+  echo "  \"run_id\": \"${run_id}\","
+  echo "  \"profile\": \"${PROFILE:-<none, .env only>}\","
+  echo "  \"timestamp_utc\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+  for v in AGENTS RATE DURATION WARMUP PRE_ALLOCATED_VUS MAX_VUS P95_MS SUCCESS_RATE \
+           CLIENT_ID CLIENT_AUTH_METHOD SUBJECT_ISSUER SUBJECT_AUDIENCE SUBJECT_USER_COUNT \
+           SUBJECT_TOKEN_LIFETIME PER_AGENT_CLIENTS NAMESPACE PF_RELEASE LOADTEST_RELEASE; do
+    [[ -n "${!v:-}" ]] && printf '  "%s": "%s",\n' "${v}" "${!v}"
+  done
+  echo "  \"k6_image\": \"$(helm -n "${NAMESPACE}" get values "${LOADTEST_RELEASE}" -a 2>/dev/null | grep -oE 'repository: .*|tag: .*' | tr -d ' ' | paste -sd':' - | head -1 || echo unknown)\","
+  echo "  \"nodes\": ["
+  kubectl get nodes -o json 2>/dev/null | python3 -c "
+import json, sys
+for n in json.load(sys.stdin)['items']:
+    print('    ' + json.dumps({'name': n['metadata']['name'], 'instance_type': n['metadata']['labels'].get('beta.kubernetes.io/instance-type', '?'), 'allocatable_cpu': n['status']['allocatable']['cpu']}) + ',')
+" 2>/dev/null || true
+  echo "  ]"
+  echo "  \"engine_pods\": ["
+  kubectl -n "${NAMESPACE}" get pods -l "app.kubernetes.io/instance=${PF_RELEASE},app.kubernetes.io/name=pingfederate-engine" -o json 2>/dev/null | python3 -c "
+import json, sys
+for p in json.load(sys.stdin)['items']:
+    print('    ' + json.dumps({'name': p['metadata']['name'], 'node': p['spec']['nodeName'], 'started': p['status']['startTime']}) + ',')
+" 2>/dev/null || true
+  echo "  ]"
+} > "${run_dir}/env.json"
+# Strip trailing commas before '}' or ']' (the looped printf emits trailing commas).
+python3 -c 'import re,sys; p=sys.argv[1]; t=open(p).read(); open(p,"w").write(re.sub(r",(\s*[}\]])", r"", t))' "${run_dir}/env.json"
+
 helm uninstall "${LOADTEST_RELEASE}" --namespace "${NAMESPACE}" >/dev/null 2>&1 || true
 helm install "${LOADTEST_RELEASE}" "${ROOT_DIR}/helm/loadtest" "${helm_args[@]}"
 

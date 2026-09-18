@@ -157,6 +157,8 @@ These assumptions define what the measured numbers mean. They are design decisio
 
 4. **What the numbers include and exclude.** Measured: client authentication, JWT validation, token-exchange policy evaluation, output-token signing, transport. Not measured: user authentication (synthetic subjects, no IdP round-trip), persistent-grant storage (never touched), external IdP/PAZ calls. Results are therefore a *floor* for real deployments that add storage-backed validation steps.
 
+5. **Stage numbers reflect continuously-warmed engines.** Ladder stages run sequentially against the same deployment: by the time a later stage runs, JIT compilation, caches, and JWKS parsing are hot from the preceding stages. The 30s warmup primes each run's connections, but cross-stage comparisons embed this ordering effect — the first stage of a campaign after a fresh deployment is not directly comparable to later stages. All stage numbers therefore represent a *continuously-warmed* PingFederate, which is itself a representativeness claim: production engines serving steady traffic are warm, so this matches the intended steady-state use case, at the cost of not characterizing cold-start behavior (first requests after a restart, before the warmup period).
+
 ## Configuration and safety notes
 
 - `.env` contains credentials and is excluded from Git. Profiles in `profiles/` hold only shape settings and client IDs, never secrets. `keys/` holds the subject signing key and is also excluded.

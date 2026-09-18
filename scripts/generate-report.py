@@ -80,7 +80,10 @@ def parse_k6_metrics_json(path):
         print(f"warning: {path} unexpectedly large; skipping", file=sys.stderr)
         return None
     durations = []
+    subtimings = {}  # metric -> [(ts, ms)] for connecting/tls_handshaking/waiting/sending/receiving
     warmup_points = 0
+    sub_metric_names = {"http_req_connecting", "http_req_tls_handshaking",
+                        "http_req_waiting", "http_req_sending", "http_req_receiving"}
     with open(path, errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -90,7 +93,10 @@ def parse_k6_metrics_json(path):
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if ev.get("type") != "Point" or ev.get("metric") != "http_req_duration":
+            if ev.get("type") != "Point":
+                continue
+            metric = ev.get("metric", "")
+            if metric != "http_req_duration" and metric not in sub_metric_names:
                 continue
             data = ev.get("data", {})
             # Warmup traffic (phase=warmup scenario) is excluded from the
@@ -104,7 +110,10 @@ def parse_k6_metrics_json(path):
             except ValueError:
                 continue
             # k6's json output already reports trend durations in milliseconds.
-            durations.append((ts, float(data.get("value", 0))))
+            if metric == "http_req_duration":
+                durations.append((ts, float(data.get("value", 0))))
+            else:
+                subtimings.setdefault(metric, []).append((ts, float(data.get("value", 0))))
     if not durations:
         return None
     durations.sort(key=lambda x: x[0])
@@ -125,6 +134,14 @@ def parse_k6_metrics_json(path):
 
     # Throughput: requests per second (count per bucket), smoothed over 5s.
     req_rate = [(sec, len(buckets[sec])) for sec in sorted(buckets)]
+    # Sub-timings (connecting / tls_handshaking / waiting / sending /
+    # receiving): per-second means, pooled across this agent's requests.
+    sub_series = {}
+    for name, pts in subtimings.items():
+        tb = {}
+        for ts, ms in pts:
+            tb.setdefault(int((ts - t0).total_seconds()), []).append(ms)
+        sub_series[name] = [(sec, sum(v) / len(v)) for sec, v in sorted(tb.items())]
     return {
         "dur_avg_s": dur_avg,
         "dur_p90_s": dur_p90,
@@ -132,6 +149,7 @@ def parse_k6_metrics_json(path):
         "req_rate": req_rate,
         # Raw per-second values, for exact pooling across agents on page 1.
         "buckets_ms": buckets,
+        "subtimings": sub_series,
         "total_requests": len(durations),
         "warmup_points": warmup_points,
         "t0": t0,
@@ -148,6 +166,30 @@ def parse_k6_progress_lines(path):
         pts.append((sec, int(m.group(3))))
     pts.sort()
     return pts
+
+
+def pooled_percentile(series, q=0.95):
+    """True pooled percentile (ms) over every measured-phase raw datapoint in
+    all agents' per-second buckets — recomputable by a reviewer from the
+    raw NDJSON. Returns None when no datapoints exist."""
+    all_ms = [ms for s in series.values() for vals in s["buckets_ms"].values() for ms in vals]
+    if not all_ms:
+        return None
+    all_ms.sort()
+    return all_ms[min(len(all_ms) - 1, int(math.ceil(q * len(all_ms))) - 1)]
+
+
+def pooled_subtiming_means(series):
+    """Pooled per-second mean of each k6 sub-timing (connecting, tls_handshaking,
+    waiting, sending, receiving) across all agents: {metric: [(sec, ms)]}."""
+    pooled = {}
+    for s in series.values():
+        for name, pts in s.get("subtimings", {}).items():
+            d = pooled.setdefault(name, {})
+            for sec, ms in pts:
+                d.setdefault(sec, []).append(ms)
+    return {name: [(sec, sum(v) / len(v)) for sec, v in sorted(d.items())]
+            for name, d in pooled.items()}
 
 
 def parse_usage_csv(path):
@@ -383,6 +425,13 @@ def main():
             sys.exit(1)
 
     run_dir = RESULTS / sys.argv[1]
+    # Per-run metadata captured at test launch (env.json, written by
+    # run-in-cluster.sh): resolved envs, profile, thresholds. Thresholds
+    # govern the verdict — the same values k6 gated on.
+    env_meta = {}
+    env_json = run_dir / "env.json"
+    if env_json.is_file():
+        env_meta = json.loads(env_json.read_text())
     if not run_dir.is_dir():
         print(f"Run not found: {run_dir}", file=sys.stderr)
         sys.exit(1)
@@ -487,14 +536,13 @@ def main():
         sum(s["total_requests"] for s in series.values())
     success_vals = [s.get("success", [100, 0, 0])[0] for s in summaries]
     success_pct = min(success_vals) if success_vals else 100.0
-    # Platform-wide p95: pooled p90 series top value if available (exact, from
-    # raw datapoints), else the worst agent's end-of-run p95.
-    if latency_p90:
-        pooled_p95 = max(v for _, v in latency_p90[0][2])  # conservative proxy from pooled p90
-    else:
-        pooled_p95 = 0
-    p95s = [s["latency"][5] for s in summaries]
-    platform_p95 = max(pooled_p95, 0) if latency_p90 else (max(p95s) if p95s else 0)
+
+    # Platform-wide p95: the true pooled percentile over every measured-phase
+    # datapoint across all agents (exactly the same values a reviewer would
+    # recompute from the raw NDJSON streams). Falls back to the worst agent's
+    # end-of-run p95 only when no streams exist.
+    platform_p95 = pooled_percentile(series) if series else (
+        max((s["latency"][5] for s in summaries if "latency" in s), default=0))
     duration_s = max((s["dur_p90_s"][-1][0] for s in series.values()), default=300)
     throughput_total = total_reqs / duration_s if duration_s else 0
     # Dropped iterations and achieved-vs-target rate: the generator must not
@@ -528,7 +576,16 @@ def main():
         target_measured = target_rate * len(summaries) * duration_s
         if target_measured > 0:
             achieved_pct = 100.0 * measured_reqs / target_measured
-    verdict = "PASS" if platform_p95 < THRESHOLD_P95_MS and success_pct >= 99 and (achieved_pct is None or achieved_pct >= 98) else "FAIL"
+    # Thresholds ride with the run's captured metadata (env.json), falling
+    # back to the last-resort defaults; never a hardcoded constant.
+    p95_gate = float(env_meta.get("P95_MS", 500.0))
+    success_gate = float(env_meta.get("SUCCESS_RATE", 0.99)) * 100.0
+    verdict = "PASS" if (
+        platform_p95 < p95_gate
+        and success_pct >= success_gate
+        and (achieved_pct is None or achieved_pct >= 98)
+        and total_dropped == 0
+    ) else "FAIL"
 
     agent_rows = []
     for s in sorted(summaries, key=lambda x: x["agent"]):
@@ -596,6 +653,25 @@ def main():
         ]
         chart_html += line_chart("Hosting nodes — total CPU", node_lines,
                                  "% of node allocatable", y_max=130)
+    if series:
+        # Latency breakdown (M4): where the wall-clock time went — connection
+        # setup, TLS, server wait, transfer. Pooled per-second means across
+        # agents; explains WHAT changed when a stage's p95 moves.
+        sub_means = pooled_subtiming_means(series)
+        breakdown = []
+        labels = {
+            "http_req_connecting": ("connecting", "#d97706"),
+            "http_req_tls_handshaking": ("tls_handshaking", "#7c3aed"),
+            "http_req_waiting": ("waiting (server)", "#2563eb"),
+            "http_req_sending": ("sending", "#059669"),
+            "http_req_receiving": ("receiving", "#dc2626"),
+        }
+        for name, (label, color) in labels.items():
+            if name in sub_means and sub_means[name]:
+                breakdown.append((label, color, moving_average(sub_means[name], 5)))
+        if breakdown:
+            chart_html += line_chart("Latency breakdown (5s smoothing)",
+                                     breakdown, "ms per phase")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     html = f"""<!doctype html>
@@ -714,6 +790,36 @@ def main():
     out = run_dir / "report.html"
     out.write_text(html)
     print(f"Report written: {out}")
+
+    # Commit-friendly per-run summary (raw streams stay out of git; this
+    # JSON makes the evidence behind any report claim version-controlled).
+    summary = {
+        "run_id": sys.argv[1],
+        "profile": env_meta.get("profile"),
+        "timestamp_utc": timestamp,
+        "verdict": verdict,
+        "p95_pooled_measured_ms": round(platform_p95, 2),
+        "p95_gate_ms": p95_gate,
+        "success_pct": round(success_pct, 2),
+        "achieved_vs_target_pct": round(achieved_pct, 2) if achieved_pct is not None else None,
+        "target_rate_per_agent": target_rate,
+        "dropped_iterations": total_dropped,
+        "total_requests_measured": sum(s["total_requests"] for s in series.values()) if series else total_reqs,
+        "measured_duration_s": duration_s,
+        "agents": [
+            {
+                "agent": s["agent"],
+                "avg_ms": s["latency"][0],
+                "p95_ms": s["latency"][5],
+                "success_pct": s.get("success", [0])[0],
+                "requests": int(s.get("reqs", [0])[0]),
+                "dropped": int(s.get("dropped", [0])[0]),
+            }
+            for s in sorted(summaries, key=lambda x: x["agent"])
+        ],
+    }
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"Summary written: {run_dir / 'summary.json'}")
 
 
 if __name__ == "__main__":
