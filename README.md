@@ -10,6 +10,44 @@ The load is sent directly to the engine Service on port 9031. Administration tra
 
 Subject tokens are **self-signed by the load generator** (RS256 with the predefined key in `keys/subject-signing.key`) and validated by PingFederate against the matching public JWKS shipped in the server profile — user authentication is not part of the measurement. Each request carries a freshly signed token whose subject rotates through 100 synthetic users, so no token is ever replayed. The PingFederate side (token processor, access token manager, token exchange policy, OAuth client) is declarative: the server profile carries it as `instance/bulk-config/data.json.subst`, which the PF image imports at startup — see `docs/pingfederate-configuration.md`.
 
+## Scope of this campaign
+
+This campaign is a **baseline characterization** of the RFC 8693 token-exchange path at fixed reference load levels up to **500 exchanges/second**: token-endpoint latency (p50/p90/p95/max), achieved throughput, error rate, and PingFederate pod CPU/memory, measured over five-minute steady windows at each reference level.
+
+**Deliberately out of scope — this data does not support conclusions about:**
+
+- the saturation point, maximum sustainable throughput, capacity, headroom, or recommended operating limits — no reference level is run to failure;
+- behavior above 500 exchanges/second — untested is not the same as acceptable;
+- overload, burst, failure, and recovery behavior;
+- autoscaling (the engine topology is fixed at two pods);
+- deployments whose token path adds persistent-store access, opaque subject-token validation, or remote JWKS fetching — for those, these results are a floor, not a measurement (see Benchmark assumptions).
+
+The bound is a design decision, not an omission: the cluster is shared with workloads this project does not own, and deliberately driving co-tenants toward a failure point is not authorized. Reference levels are therefore fixed points, measured as-is, and load stops there. Capacity conclusions would require a separate campaign on isolated infrastructure.
+
+### Why 500 exchanges/second
+
+The highest reference level is derived from a workload model, not chosen arbitrarily:
+
+```
+TPS = agents × users_per_agent × exchanges_per_user_per_minute / 60
+    = 10 × 3,000 × 1/60
+    = 500/s
+```
+
+- **10 service agents** — machine identities calling the token endpoint on their users' behalf.
+- **3,000 active users per agent** (30,000 active users total) — the user population served in the measured period.
+- **1 exchange per active user per minute** — the assumed steady-state interaction rate. The estimate is linear in every parameter, so replace these values with the deployment's actual population and interaction rate and the reference level moves with them. Bursts above steady state are out of scope (see above).
+
+The profile (`RATE=500`) and this derivation must stay in sync: if the deployment's estimate is higher, write a new reference profile — do not silently stretch this one.
+
+Sanity check (Little's law): at 500/s with p95 ≈ 100 ms, in-flight concurrency is ≈ 50 requests cluster-wide, ≈ 5 per agent — far inside the per-agent VU allocation, so the load generator is not the constraint at the reference level.
+
+### Measurement basis
+
+- Each reference level is run **once per campaign**, in ascending order against the same continuously warmed engines. Numbers are baseline measurements of that warmed steady state, not confidence-bounded statistical estimates — rerun before treating a difference between two runs as meaningful.
+- The achieved rate is part of the result, not an assumption: k6's `dropped_iterations` and the per-second request rate are recorded with every run. A run that dropped iterations measured less load than its target rate — do not quote it at the target rate.
+- The nodes are shared: co-tenant load during a run is visible in the report's node-CPU panel and is an uncontrolled environmental factor.
+
 ## Prerequisites
 
 - Kubernetes cluster and a working `kubectl` context
@@ -71,7 +109,7 @@ A profile is a self-contained file in `profiles/<name>.env` loaded on top of `.e
 make test PROFILE=agents
 ```
 
-Profile values win over `.env`, so a profile fully describes its test. The bundled `agents` profile runs 10 parallel k6 agent Pods signing fresh subject tokens for 100 rotating synthetic users:
+Profile values win over `.env`, so a profile fully describes its test. The bundled `agents` profile runs 10 parallel k6 agent Pods signing fresh subject tokens for 100 rotating synthetic users at a combined 100 exchanges/second:
 
 1. Generate the signing key once: `make keys`.
 2. Push the server profile (with the generated JWKS) to your profiles repo, set `SERVER_PROFILE_URL`, and `make deploy`.
@@ -79,7 +117,7 @@ Profile values win over `.env`, so a profile fully describes its test. The bundl
 
 Each agent Pod runs `RATE / AGENTS` iterations per second, signs a fresh RS256 subject token per iteration (rotating `sub` through its share of the users), and exchanges it with `client_credentials`-authenticated requests. The measured path is exactly the production one and no single subject token is replayed.
 
-Custom profiles: copy `profiles/agents.env`, adjust `AGENTS`, `RATE`, and `SUBJECT_USER_COUNT`, then `make test PROFILE=<name>`.
+Custom profiles: copy `profiles/agents.env`, adjust `AGENTS`, `RATE`, and `SUBJECT_USER_COUNT`, then `make test PROFILE=<name>`. Reference levels for this campaign live in `profiles/stage-*.env` (100–500/s) and must stay within the documented bound — see "Scope of this campaign".
 
 ## Load controls
 
@@ -95,7 +133,7 @@ The defaults generate 50 token exchanges per second for five minutes. Set these 
 | `P95_MS` | `500` | p95 latency threshold in milliseconds |
 | `SUCCESS_RATE` | `0.99` | Minimum valid OAuth response rate |
 
-Run several stages rather than jumping immediately to saturation: 10 requests/second as a baseline, then 25, 50, 100, and upward until latency or error thresholds fail. Keep PingFederate CPU and memory requests/limits unchanged between runs.
+Run the reference levels in `profiles/stage-*.env` in ascending order — do not run a level whose rate exceeds the campaign bound (500/s). Keep PingFederate CPU and memory requests/limits unchanged between runs. The thresholds (`P95_MS`, `SUCCESS_RATE`) are **provisional** sanity bounds for these reference levels, not production SLOs — no business requirement is attached to them.
 
 ## What the result means
 

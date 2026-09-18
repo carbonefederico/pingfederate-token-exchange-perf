@@ -92,12 +92,16 @@
               {
                 "name": "Allowed Audiences",
                 "rows": [
-                  {
-                    "fields": [
-                      { "name": "Audience", "value": "${SUBJECT_AUDIENCE}" }
-                    ],
-                    "defaultRow": false
-                  }
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-0" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-1" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-2" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-3" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-4" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-5" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-6" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-7" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-8" } ], "defaultRow": false },
+                  { "fields": [ { "name": "Audience", "value": "perf-agent-9" } ], "defaultRow": false }
                 ]
               }
             ]
@@ -221,8 +225,215 @@
       "resourceType": "/oauth/clients",
       "items": [
         {
-          "clientId": "${PERF_CLIENT_ID}",
-          "name": "Perf Test Client",
+          "clientId": "perf-agent-0",
+          "name": "Perf Agent 0",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-1",
+          "name": "Perf Agent 1",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-2",
+          "name": "Perf Agent 2",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-3",
+          "name": "Perf Agent 3",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-4",
+          "name": "Perf Agent 4",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-5",
+          "name": "Perf Agent 5",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-6",
+          "name": "Perf Agent 6",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-7",
+          "name": "Perf Agent 7",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-8",
+          "name": "Perf Agent 8",
+          "enabled": true,
+          "grantTypes": ["TOKEN_EXCHANGE"],
+          "clientAuth": {
+            "type": "SECRET",
+            "secret": "${PERF_CLIENT_SECRET}"
+          },
+          "tokenExchangeProcessorPolicyRef": {
+            "id": "PerfTokenExchangePolicy",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/tokenExchange/processor/policies/PerfTokenExchangePolicy"
+          },
+          "defaultAccessTokenManagerRef": {
+            "id": "PerfAccessTokenManager",
+            "location": "https://${PF_ADMIN_PUBLIC_HOSTNAME}:9999/pf-admin-api/v1/oauth/accessTokenManagers/PerfAccessTokenManager"
+          },
+          "restrictToDefaultAccessTokenManager": true,
+          "bypassApprovalPage": true,
+          "redirectUris": [],
+          "exclusiveScopes": [],
+          "restrictedScopes": []
+        },
+        {
+          "clientId": "perf-agent-9",
+          "name": "Perf Agent 9",
           "enabled": true,
           "grantTypes": ["TOKEN_EXCHANGE"],
           "clientAuth": {

@@ -77,7 +77,11 @@ async function buildSubjectToken(vu, iter) {
   const payload = {
     iss: subjectIssuer,
     sub: `perf-user-${String(userIndex + 1).padStart(3, '0')}`,
-    aud: subjectAudience,
+    // With per-agent clients, the subject token's audience is the agent's
+    // own client id (the profile lists all ten as allowed audiences).
+    aud: __ENV.PER_AGENT_CLIENTS === 'true' && __ENV.AGENT_INDEX !== undefined
+      ? `perf-agent-${__ENV.AGENT_INDEX}`
+      : subjectAudience,
     iat: now,
     exp: now + tokenLifetimeSec,
     jti: `${vu}-${iter}-${now}`,
@@ -158,6 +162,14 @@ async function doExchange() {
   // so consecutive requests authenticate different subjects.
   const subjectToken = await buildSubjectToken(__VU, __ITER);
 
+  // One OAuth client per agent: perf-agent-<AGENT_INDEX>. The profile
+  // provisions matching clients; CLIENT_ID is the base name. With the
+  // default single-client profile (CLIENT_ID unchanged), agents share it.
+  let clientId = __ENV.CLIENT_ID;
+  if (__ENV.PER_AGENT_CLIENTS === 'true' && __ENV.AGENT_INDEX !== undefined) {
+    clientId = `perf-agent-${__ENV.AGENT_INDEX}`;
+  }
+
   const body = {
     grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
     subject_token: subjectToken,
@@ -180,10 +192,10 @@ async function doExchange() {
   };
 
   if ((__ENV.CLIENT_AUTH_METHOD || 'client_secret_basic') === 'client_secret_post') {
-    body.client_id = __ENV.CLIENT_ID;
+    body.client_id = clientId;
     body.client_secret = __ENV.CLIENT_SECRET;
   } else {
-    params.headers.Authorization = `Basic ${encoding.b64encode(`${__ENV.CLIENT_ID}:${__ENV.CLIENT_SECRET}`)}`;
+    params.headers.Authorization = `Basic ${encoding.b64encode(`${clientId}:${__ENV.CLIENT_SECRET}`)}`;
   }
 
   const response = http.post(__ENV.PF_TOKEN_URL, body, params);

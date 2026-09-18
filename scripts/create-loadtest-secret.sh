@@ -16,6 +16,7 @@ args=(
   --from-literal=CLIENT_ID="${CLIENT_ID}"
   --from-literal=CLIENT_SECRET="${CLIENT_SECRET}"
   --from-literal=CLIENT_AUTH_METHOD="${CLIENT_AUTH_METHOD:-client_secret_basic}"
+  --from-literal=PER_AGENT_CLIENTS="${PER_AGENT_CLIENTS:-true}"
   --from-file=SUBJECT_SIGNING_KEY="${SUBJECT_SIGNING_KEY_FILE}"
   --from-literal=SUBJECT_ISSUER="${SUBJECT_ISSUER:-https://pf-perf-subject}"
   --from-literal=SUBJECT_AUDIENCE="${SUBJECT_AUDIENCE:-${CLIENT_ID}}"
