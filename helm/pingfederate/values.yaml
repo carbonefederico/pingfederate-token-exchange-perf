@@ -1,0 +1,47 @@
+# Overrides for the official pingidentity/ping-devops chart.
+# Current topology: one admin Pod and two runtime engine Pods.
+global:
+  ingress:
+    enabled: false
+  license:
+    secret:
+      devOps: devops-secret
+
+pingfederate-admin:
+  enabled: true
+  container:
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+pingfederate-engine:
+  enabled: true
+  container:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: "2"
+        memory: 3Gi
+      limits:
+        cpu: "4"
+        memory: 6Gi
+    affinity:
+      podAntiAffinity:
+        # Preferred spread across nodes; check make verify output if physical
+        # node separation matters for a run.
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: pingfederate-engine
+                  app.kubernetes.io/instance: pf
+  workload:
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1

@@ -1,0 +1,126 @@
+# JWKS endpoint: an nginx pod serving the subject-token verification keys
+# over HTTPS, so PingFederate FETCHES them (JWKS URL mode) instead of holding
+# an embedded copy in its config — the production-shaped distribution path
+# (issuer publishes JWKS, verifier fetches and caches). HTTPS is required:
+# PF rejects plain-http JWKS URLs at config-validation time. The certificate
+# is self-signed (CN=perf-jwks-server, from make keys); PingFederate imports
+# it into the JVM truststore via the profile's pre-start hook, so the fetch
+# validates like any issuer's published endpoint.
+#
+# Deployed as its own release before PingFederate: the token processor's
+# JWKS URL points here, and the loadtest release is uninstalled between runs
+# — the key source must not disappear with it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-nginx-conf
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: jwks-server
+data:
+  default.conf: |
+    server {
+      listen 443 ssl;
+      server_name perf-jwks-server;
+      ssl_certificate     /etc/nginx/tls/tls.crt;
+      ssl_certificate_key /etc/nginx/tls/tls.key;
+      location / {
+        root /usr/share/nginx/html;
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-tls
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: jwks-server
+type: kubernetes.io/tls
+data:
+  # deploy.sh passes the PEM files already base64-encoded
+  tls.crt: {{ .Values.tlsCert }}
+  tls.key: {{ .Values.tlsKey }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-jwks
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: jwks-server
+data:
+  jwks.json: {{ .Values.jwksJson | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: jwks-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: jwks-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/name: jwks-server
+    spec:
+      containers:
+        - name: nginx
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 443
+              name: https
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          volumeMounts:
+            - name: jwks
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /jwks.json
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: jwks
+          configMap:
+            name: {{ .Release.Name }}-jwks
+        - name: conf
+          configMap:
+            name: {{ .Release.Name }}-nginx-conf
+        - name: tls
+          secret:
+            secretName: {{ .Release.Name }}-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: perf-jwks-server
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: jwks-server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/name: jwks-server
+  ports:
+    - name: https
+      port: 443
+      targetPort: 443

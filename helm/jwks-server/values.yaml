@@ -1,0 +1,24 @@
+# JWKS payload (the full JSON document served at /jwks.json). Set with
+# --set-string from scripts/deploy.sh, which reads
+# server-profiles/.../data/perf-subject-jwks.json (produced by make keys).
+jwksJson: "{}"
+
+# TLS material for the HTTPS endpoint (PF requires an https:// JWKS URL).
+# Set from keys/jwks-server-tls.key and the perf-jwks-server.crt in the
+# server profile, both produced by make keys; the profile's pre-start hook
+# imports the cert into PingFederate's JVM truststore.
+tlsCert: ""
+tlsKey: ""
+
+image:
+  repository: nginx
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: pf-token-exchange-loadtest
+description: In-cluster k6 test for PingFederate RFC 8693 token exchange
+type: application
+version: 0.1.0
+appVersion: "2.2.0"
+

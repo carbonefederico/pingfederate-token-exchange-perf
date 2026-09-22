@@ -1,0 +1,16 @@
+.env
+keys/
+# results/ holds per-run artifacts (metric streams, agent logs, reports) —
+# large, local-only. The published result layer is reports/ (the per-run HTML
+# reports, tracked); evidence/ (per-run summary.json + env.json) is a local
+# cross-check, git-ignored like results/.
+results/
+evidence/
+*.zip
+
+# The SSL server p12 holds a private key — never commit. Its content travels
+# to PingFederate as a container env var at deploy time (see .env.example).
+server-profiles/**/ssl-server.p12
+.DS_Store
+__pycache__/
+*.pyc

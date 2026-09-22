@@ -1,0 +1,30 @@
+image:
+  repository: grafana/k6
+  tag: "2.2.0"
+  pullPolicy: IfNotPresent
+
+existingSecret: pf-loadtest
+runId: "manual"
+
+# Number of parallel k6 agent Pods. RATE is the TOTAL rate across all
+# agents; each agent runs RATE / agentCount. Set via --set-string from
+# scripts/run-in-cluster.sh (AGENTS in the selected profile).
+agentCount: 1
+
+# k6 agents request 100m: this shared cluster is full (six engines reserve
+# 1.5 CPU each + co-tenants), so per-node headroom is ~0.1-0.7 CPU — a 1 CPU
+# request leaves most agent pods Pending. Observed agent usage: ~180m at
+# 50 it/s, ~550m expected at 150 it/s (RS256 signing is CPU-bound) — the
+# burstable QoS lets them use what they need, and the monitor CSV records
+# agent CPU so starvation is verifiable post-run.
+resources:
+  requests:
+    cpu: "100m"
+    memory: 512Mi
+  limits:
+    cpu: "4"
+    memory: 2Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,42 @@
+#!/usr/bin/env sh
+# Trust the in-cluster JWKS endpoint's certificate.
+#
+# The subject-token processor fetches its verification keys from
+# ${SUBJECT_JWKS_URL} (https://perf-jwks-server/jwks.json) — JWKS URL mode,
+# the production-shaped key distribution. PingFederate requires HTTPS there,
+# and the endpoint's certificate is self-signed (issued by `make keys`),
+# so the JVM truststore must trust it before PingFederate starts — both for
+# the bulk import's config validation and for runtime JWKS fetches on admin
+# and engines alike.
+#
+# Timing: runs as a .post of 07-apply-server-profile, i.e. after the profile
+# (carrying the certificate) has been merged into SERVER_ROOT_DIR and before
+# the JVM starts; a 01-start-server.sh.pre would run before the profile
+# lands. The JVM truststore is shared by admin and engines and the hook runs
+# on every pod start.
+#
+# Idempotent: skips the import when the alias already exists. Fails the
+# container when the certificate is missing so a profile/endpoint mismatch
+# surfaces at startup instead of as fetch failures at token-exchange time.
+test "${VERBOSE}" = "true" && set -x
+
+# shellcheck source=../../../../pingcommon/opt/staging/hooks/pingcommon.lib.sh
+. "${HOOKS_DIR}/pingcommon.lib.sh"
+
+CERT_FILE="${SERVER_ROOT_DIR}/server/default/data/perf-jwks-server.crt"
+ALIAS="perf-jwks-server"
+KEYTOOL="$(command -v keytool || echo /opt/java/bin/keytool)"
+
+if test ! -f "${CERT_FILE}"; then
+    container_failure 1 "JWKS endpoint certificate not found at ${CERT_FILE} (run make keys, re-push profile)"
+fi
+
+if "${KEYTOOL}" -list -alias "${ALIAS}" -cacerts -storepass changeit >/dev/null 2>&1; then
+    echo "INFO: ${ALIAS} already trusted; skipping import"
+else
+    echo "Importing ${CERT_FILE} into JVM truststore as ${ALIAS}"
+    "${KEYTOOL}" -importcert -noprompt -trustcacerts \
+        -alias "${ALIAS}" -file "${CERT_FILE}" \
+        -cacerts -storepass changeit
+    die_on_error 2 "keytool import failed for ${ALIAS}" || exit ${?}
+fi

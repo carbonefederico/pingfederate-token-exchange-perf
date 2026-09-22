@@ -1,0 +1,6 @@
+apiVersion: v2
+name: jwks-server
+description: In-cluster JWKS endpoint serving the subject-token verification keys
+type: application
+version: 0.1.0
+appVersion: "1.27"
