@@ -32,22 +32,6 @@ The bound is a design decision, not an omission: the cluster is shared with work
 | 250/s | 100.0% achieved | 75,007 | 5.23 ms | 4.77 ms | 6.63 ms | 7.44 ms | 10.80 ms |
 | 500/s | 100.0% achieved | 150,008 | 5.88 ms | 5.33 ms | 7.70 ms | 9.51 ms | 15.31 ms |
 
-The highest reference level is derived from a workload model, not chosen
-arbitrarily:
-
-```
-TPS = agents × users_per_agent × exchanges_per_user_per_minute / 60
-    = 10 × 3,000 × 1/60
-    = 500/s
-```
-
-- **10 service agents** — machine identities calling the token endpoint on their users' behalf.
-- **3,000 active users per agent** (30,000 active users total) — the user population served in the measured period.
-- **1 exchange per active user per minute** — the assumed steady-state interaction rate. The estimate is linear in every parameter, so replace these values with the deployment's actual population and interaction rate and the reference level moves with them. Bursts above steady state are out of scope (see above).
-
-The profile (`RATE=500`) and this derivation must stay in sync: if the deployment's estimate is higher, write a new reference profile — do not silently stretch this one.
-
-Sanity check (Little's law): at 500/s with p95 ≈ 100 ms, in-flight concurrency is ≈ 50 requests cluster-wide, ≈ 5 per agent — far inside the per-agent VU allocation, so the load generator is not the constraint at the reference level.
 
 Protocol: three ascending rounds (100 → 250 → 500, ×3); each row is the **median
 run** of its three, selected by measured p95. Per-run p95s — 100/s:
