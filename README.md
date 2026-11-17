@@ -57,6 +57,21 @@ campaign).
 - The achieved rate is part of the result, not an assumption: k6's `dropped_iterations` and the achieved-vs-target percentage are recorded with every run. A run that dropped iterations measured less load than its target rate — do not quote it at the target rate.
 - The nodes are shared: co-tenant load during a run is visible in the report's node-CPU panel and is an uncontrolled environmental factor.
 
+### Test environment and sizing
+
+The campaign ran on a shared Kubernetes cluster of six `r5.xlarge` worker
+nodes (4 vCPU / 32 GiB each, 3,400m allocatable CPU after system
+reservations). The PingFederate engine pods carried lab sizing of 2 CPU /
+3 GiB requests against 4 CPU / 6 GiB limits, two pods with preferred
+anti-affinity across nodes; the admin pod carried 1 CPU / 2 GiB requests
+and 2 / 4 GiB limits and is idle during runs. The ten k6 agent pods
+requested 100m CPU each with a 4 CPU limit (burstable — the monitor CSV
+records their actual usage). The reference results are figures for this
+environment: two engine pods sized at half their CPU limit, a burstable
+generator, and co-tenant workloads sharing the nodes. Node inventory and
+pod-to-node placement for every run are recorded in
+`results/<run_id>/env.json`.
+
 ## Prerequisites
 
 - Kubernetes cluster and a working `kubectl` context
